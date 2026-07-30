@@ -1,5 +1,7 @@
 # CrewPlan Lite
 
+[![CI](https://github.com/Danylo16/CrewPlan-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/Danylo16/CrewPlan-Lite/actions/workflows/ci.yml)
+
 A full-stack workforce scheduling application for managing employees, projects, and weekly shift assignments.
 
 CrewPlan prevents overlapping employee shifts, visualizes projects with distinct colors, and integrates Austrian public holidays into the weekly schedule.
