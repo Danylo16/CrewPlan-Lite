@@ -4,7 +4,7 @@ A full-stack workforce scheduling application for managing employees, projects, 
 
 CrewPlan prevents overlapping employee shifts, visualizes projects with distinct colors, and integrates Austrian public holidays into the weekly schedule.
 
-![CrewPlan weekly schedule](docs/crewplan-schedule.png)
+![CrewPlan weekly schedule](docs/image.png)
 
 ## Features
 
