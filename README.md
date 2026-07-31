@@ -228,7 +228,7 @@ Type-check the backend:
 ```bash
 yarn tsc --noEmit
 ```
-Tests and production builds are also executed automatically by GitHub Actions on every push and pull request to main.
+Tests and production builds are also executed automatically by GitHub Actions on every push and pull request to `main`.
 
 ## Production Build
 
