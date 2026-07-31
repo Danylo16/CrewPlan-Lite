@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
+import { Prisma } from "../src/generated/prisma/client.js";
 
 const prismaMock = vi.hoisted(() => ({
   employee: {
@@ -15,7 +16,10 @@ const prismaMock = vi.hoisted(() => ({
   shift: {
     findMany: vi.fn(),
     findFirst: vi.fn(),
+    findUnique: vi.fn(),
     create: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
@@ -133,5 +137,192 @@ describe("CrewPlan API", () => {
 
     expect(response.status).toBe(201);
     expect(prismaMock.shift.create).toHaveBeenCalledOnce();
+  });
+
+  it("updates an existing shift", async () => {
+    prismaMock.shift.findUnique.mockResolvedValue({
+      id: 11,
+      employeeId: 1,
+      projectId: 2,
+    });
+
+    prismaMock.employee.findUnique.mockResolvedValue({
+      id: 1,
+    });
+
+    prismaMock.project.findUnique.mockResolvedValue({
+      id: 3,
+    });
+
+    prismaMock.shift.findFirst.mockResolvedValue(null);
+
+    prismaMock.shift.update.mockResolvedValue({
+      id: 11,
+      employeeId: 1,
+      projectId: 3,
+      startAt: new Date("2026-07-30T14:00:00.000Z"),
+      endAt: new Date("2026-07-30T18:00:00.000Z"),
+      note: "Updated work",
+      employee: {
+        id: 1,
+        name: "Anna Mueller",
+      },
+      project: {
+        id: 3,
+        name: "Customer Portal",
+        color: "#5A2F0C",
+      },
+    });
+
+    const response = await request(app)
+      .patch("/api/shifts/11")
+      .send({
+        employeeId: 1,
+        projectId: 3,
+        startAt: "2026-07-30T14:00:00.000Z",
+        endAt: "2026-07-30T18:00:00.000Z",
+        note: "Updated work",
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.id).toBe(11);
+    expect(response.body.projectId).toBe(3);
+    expect(response.body.note).toBe("Updated work");
+
+    expect(prismaMock.shift.update).toHaveBeenCalledWith({
+      where: {
+        id: 11,
+      },
+      data: {
+        employeeId: 1,
+        projectId: 3,
+        startAt: new Date("2026-07-30T14:00:00.000Z"),
+        endAt: new Date("2026-07-30T18:00:00.000Z"),
+        note: "Updated work",
+      },
+      include: {
+        employee: true,
+        project: true,
+      },
+    });
+  });
+
+  it("rejects an overlapping shift update", async () => {
+    prismaMock.shift.findUnique.mockResolvedValue({
+      id: 11,
+      employeeId: 1,
+      projectId: 2,
+    });
+
+    prismaMock.employee.findUnique.mockResolvedValue({
+      id: 1,
+    });
+
+    prismaMock.project.findUnique.mockResolvedValue({
+      id: 3,
+    });
+
+    prismaMock.shift.findFirst.mockResolvedValue({
+      id: 12,
+      startAt: new Date("2026-07-30T15:00:00.000Z"),
+      endAt: new Date("2026-07-30T19:00:00.000Z"),
+      project: {
+        name: "Internal Dashboard",
+      },
+    });
+
+    const response = await request(app)
+      .patch("/api/shifts/11")
+      .send({
+        employeeId: 1,
+        projectId: 3,
+        startAt: "2026-07-30T14:00:00.000Z",
+        endAt: "2026-07-30T18:00:00.000Z",
+      });
+
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("SHIFT_OVERLAP");
+    expect(response.body.conflict.id).toBe(12);
+
+    expect(prismaMock.shift.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: {
+          not: 11,
+        },
+        employeeId: 1,
+        startAt: {
+          lt: new Date("2026-07-30T18:00:00.000Z"),
+        },
+        endAt: {
+          gt: new Date("2026-07-30T14:00:00.000Z"),
+        },
+      },
+      include: {
+        project: true,
+      },
+    });
+
+    expect(prismaMock.shift.update).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when updating a missing shift", async () => {
+    prismaMock.shift.findUnique.mockResolvedValue(null);
+
+    prismaMock.employee.findUnique.mockResolvedValue({
+      id: 1,
+    });
+
+    prismaMock.project.findUnique.mockResolvedValue({
+      id: 2,
+    });
+
+    const response = await request(app)
+      .patch("/api/shifts/999")
+      .send({
+        employeeId: 1,
+        projectId: 2,
+        startAt: "2026-07-30T13:00:00.000Z",
+        endAt: "2026-07-30T17:00:00.000Z",
+      });
+
+    expect(response.status).toBe(404);
+    expect(response.body.code).toBe("SHIFT_NOT_FOUND");
+    expect(prismaMock.shift.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.shift.update).not.toHaveBeenCalled();
+  });
+
+  it("deletes an existing shift", async () => {
+    prismaMock.shift.delete.mockResolvedValue({
+      id: 11,
+    });
+
+    const response = await request(app).delete("/api/shifts/11");
+
+    expect(response.status).toBe(204);
+    expect(response.body).toEqual({});
+
+    expect(prismaMock.shift.delete).toHaveBeenCalledWith({
+      where: {
+        id: 11,
+      },
+    });
+  });
+
+  it("returns 404 when deleting a missing shift", async () => {
+    prismaMock.shift.delete.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError(
+        "No record was found for deletion",
+        {
+          code: "P2025",
+          clientVersion: "6.19.3",
+        },
+      ),
+    );
+
+    const response = await request(app).delete("/api/shifts/999");
+
+    expect(response.status).toBe(404);
+    expect(response.body.code).toBe("SHIFT_NOT_FOUND");
+    expect(response.body.message).toBe("Shift does not exist");
   });
 });

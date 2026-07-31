@@ -42,14 +42,24 @@ function toDateKey(date: Date) {
 
 function toLocalInputValue(date: Date) {
   const timezoneOffset = date.getTimezoneOffset() * 60_000;
+
   return new Date(date.getTime() - timezoneOffset)
     .toISOString()
     .slice(0, 16);
 }
 
-function createInitialForm(): ShiftForm {
-  const start = new Date();
-  start.setMinutes(0, 0, 0);
+function createInitialForm(referenceDate = new Date()): ShiftForm {
+  const start = new Date(referenceDate);
+
+  if (
+    start.getHours() === 0 &&
+    start.getMinutes() === 0 &&
+    start.getSeconds() === 0
+  ) {
+    start.setHours(9, 0, 0, 0);
+  } else {
+    start.setMinutes(0, 0, 0);
+  }
 
   const end = new Date(start);
   end.setHours(end.getHours() + 4);
@@ -71,6 +81,10 @@ function formatTime(date: string) {
 }
 
 export function SchedulePage() {
+  const [employeeFilter, setEmployeeFilter] = useState("");
+  const [projectFilter, setProjectFilter] = useState("");
+  const [holidayWarning, setHolidayWarning] = useState(false);
+
   const [weekStart, setWeekStart] = useState(() =>
     startOfWeek(new Date()),
   );
@@ -79,7 +93,14 @@ export function SchedulePage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [holidays, setHolidays] = useState<Holiday[]>([]);
-  const [form, setForm] = useState<ShiftForm>(createInitialForm);
+  const [editingShift, setEditingShift] = useState<Shift | null>(
+    null,
+  );
+
+  const [form, setForm] = useState<ShiftForm>(() =>
+    createInitialForm(),
+  );
+
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,36 +111,60 @@ export function SchedulePage() {
 
   const weekEnd = addDays(weekStart, 7);
 
+  const filteredShifts = shifts.filter((shift) => {
+    const matchesEmployee =
+      !employeeFilter ||
+      shift.employeeId === Number(employeeFilter);
+
+    const matchesProject =
+      !projectFilter ||
+      shift.projectId === Number(projectFilter);
+
+    return matchesEmployee && matchesProject;
+  });
+
   useEffect(() => {
     async function loadSchedule() {
       setIsLoading(true);
       setError(null);
+      setHolidayWarning(false);
 
       try {
         const from = encodeURIComponent(weekStart.toISOString());
         const to = encodeURIComponent(weekEnd.toISOString());
 
         const holidayFrom = toDateKey(weekStart);
-const holidayTo = toDateKey(addDays(weekStart, 6));
+        const holidayTo = toDateKey(addDays(weekStart, 6));
 
-const [
-        employeeData,
-        projectData,
-        shiftData,
-        holidayData,
-      ] = await Promise.all([
-  apiRequest<Employee[]>("/employees"),
-  apiRequest<Project[]>("/projects"),
-  apiRequest<Shift[]>(`/shifts?from=${from}&to=${to}`),
-  apiRequest<Holiday[]>(
-    `/holidays?from=${holidayFrom}&to=${holidayTo}`,
-  ),
-]); 
+        let holidayRequestFailed = false;
+
+        const holidayRequest = apiRequest<Holiday[]>(
+          `/holidays?from=${holidayFrom}&to=${holidayTo}`,
+        ).catch((holidayError) => {
+          console.warn("Holiday service unavailable:", holidayError);
+          holidayRequestFailed = true;
+          return [] as Holiday[];
+        });
+
+        const [
+          employeeData,
+          projectData,
+          shiftData,
+          holidayData,
+        ] = await Promise.all([
+          apiRequest<Employee[]>("/employees"),
+          apiRequest<Project[]>("/projects"),
+          apiRequest<Shift[]>(
+            `/shifts?from=${from}&to=${to}`,
+          ),
+          holidayRequest,
+        ]);
 
         setEmployees(employeeData);
         setProjects(projectData);
         setShifts(shiftData);
         setHolidays(holidayData);
+        setHolidayWarning(holidayRequestFailed);
 
         setForm((currentForm) => ({
           ...currentForm,
@@ -144,41 +189,159 @@ const [
     void loadSchedule();
   }, [weekStart]);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  function resetShiftForm() {
+    setForm((currentForm) => ({
+      ...createInitialForm(weekStart),
+      employeeId: currentForm.employeeId,
+      projectId: currentForm.projectId,
+    }));
+
+    setEditingShift(null);
+    setError(null);
+  }
+
+  function startEditingShift(shift: Shift) {
+    setEditingShift(shift);
+    setError(null);
+
+    setForm({
+      employeeId: String(shift.employeeId),
+      projectId: String(shift.projectId),
+      startAt: toLocalInputValue(new Date(shift.startAt)),
+      endAt: toLocalInputValue(new Date(shift.endAt)),
+      note: shift.note ?? "",
+    });
+
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    });
+  }
+
+  function belongsToVisibleWeek(shift: Shift) {
+    return (
+      new Date(shift.endAt) > weekStart &&
+      new Date(shift.startAt) < weekEnd
+    );
+  }
+
+  function changeWeek(amount: number) {
+    const nextWeek = addDays(weekStart, amount);
+
+    setWeekStart(nextWeek);
+    setEditingShift(null);
+    setError(null);
+
+    setForm((currentForm) => ({
+      ...createInitialForm(nextWeek),
+      employeeId: currentForm.employeeId,
+      projectId: currentForm.projectId,
+    }));
+  }
+
+  function goToCurrentWeek() {
+    const now = new Date();
+
+    setWeekStart(startOfWeek(now));
+    setEditingShift(null);
+    setError(null);
+
+    setForm((currentForm) => ({
+      ...createInitialForm(now),
+      employeeId: currentForm.employeeId,
+      projectId: currentForm.projectId,
+    }));
+  }
+
+  async function handleSubmit(
+    event: FormEvent<HTMLFormElement>,
+  ) {
     event.preventDefault();
     setError(null);
     setIsSubmitting(true);
 
     try {
-      const shift = await apiRequest<Shift>("/shifts", {
-        method: "POST",
-        body: JSON.stringify({
-          employeeId: Number(form.employeeId),
-          projectId: Number(form.projectId),
-          startAt: new Date(form.startAt).toISOString(),
-          endAt: new Date(form.endAt).toISOString(),
-          note: form.note || undefined,
-        }),
-      });
+      const shift = await apiRequest<Shift>(
+        editingShift
+          ? `/shifts/${editingShift.id}`
+          : "/shifts",
+        {
+          method: editingShift ? "PATCH" : "POST",
+          body: JSON.stringify({
+            employeeId: Number(form.employeeId),
+            projectId: Number(form.projectId),
+            startAt: new Date(form.startAt).toISOString(),
+            endAt: new Date(form.endAt).toISOString(),
+            note: form.note.trim()
+              ? form.note.trim()
+              : editingShift
+                ? null
+                : undefined,
+          }),
+        },
+      );
 
-      setShifts((currentShifts) =>
-        [...currentShifts, shift].sort(
+      setShifts((currentShifts) => {
+        const withoutSavedShift = currentShifts.filter(
+          (currentShift) => currentShift.id !== shift.id,
+        );
+
+        if (!belongsToVisibleWeek(shift)) {
+          return withoutSavedShift;
+        }
+
+        return [...withoutSavedShift, shift].sort(
           (first, second) =>
             new Date(first.startAt).getTime() -
             new Date(second.startAt).getTime(),
-        ),
-      );
+        );
+      });
 
-      setForm((currentForm) => ({
-        ...createInitialForm(),
-        employeeId: currentForm.employeeId,
-        projectId: currentForm.projectId,
-      }));
+      resetShiftForm();
     } catch (submitError) {
       setError(
         submitError instanceof Error
           ? submitError.message
-          : "Failed to create shift",
+          : "Failed to save shift",
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleDeleteShift() {
+    if (!editingShift) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete the shift for ${editingShift.employee.name}?`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setError(null);
+    setIsSubmitting(true);
+
+    try {
+      await apiRequest<void>(`/shifts/${editingShift.id}`, {
+        method: "DELETE",
+      });
+
+      setShifts((currentShifts) =>
+        currentShifts.filter(
+          (shift) => shift.id !== editingShift.id,
+        ),
+      );
+
+      resetShiftForm();
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Failed to delete shift",
       );
     } finally {
       setIsSubmitting(false);
@@ -190,13 +353,17 @@ const [
       <div className="page-header schedule-header">
         <div>
           <h2>Schedule</h2>
-          <p>Plan employee assignments and prevent overlapping shifts.</p>
+          <p>
+            Plan employee assignments and prevent overlapping
+            shifts.
+          </p>
         </div>
 
         <div className="week-navigation">
           <button
             type="button"
-            onClick={() => setWeekStart(addDays(weekStart, -7))}
+            aria-label="Previous week"
+            onClick={() => changeWeek(-7)}
           >
             ←
           </button>
@@ -216,7 +383,8 @@ const [
 
           <button
             type="button"
-            onClick={() => setWeekStart(addDays(weekStart, 7))}
+            aria-label="Next week"
+            onClick={() => changeWeek(7)}
           >
             →
           </button>
@@ -224,12 +392,32 @@ const [
           <button
             type="button"
             className="today-button"
-            onClick={() => setWeekStart(startOfWeek(new Date()))}
+            onClick={goToCurrentWeek}
           >
             Today
           </button>
         </div>
       </div>
+
+      {editingShift && (
+        <div className="editing-notice">
+          <div>
+            <strong>Editing shift</strong>
+            <span>
+              {editingShift.employee.name} ·{" "}
+              {editingShift.project.name}
+            </span>
+          </div>
+
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={resetShiftForm}
+          >
+            Cancel editing
+          </button>
+        </div>
+      )}
 
       <form className="panel shift-form" onSubmit={handleSubmit}>
         <label>
@@ -322,26 +510,112 @@ const [
           />
         </label>
 
-        <button
-          className="primary-button shift-submit"
-          disabled={
-            isSubmitting ||
-            employees.length === 0 ||
-            projects.length === 0
-          }
-        >
-          {isSubmitting ? "Creating…" : "Create shift"}
-        </button>
+        <div className="shift-form-actions">
+          {editingShift && (
+            <button
+              className="danger-button"
+              type="button"
+              disabled={isSubmitting}
+              onClick={handleDeleteShift}
+            >
+              Delete
+            </button>
+          )}
+
+          <button
+            className="primary-button shift-submit"
+            disabled={
+              isSubmitting ||
+              employees.length === 0 ||
+              projects.length === 0
+            }
+          >
+            {isSubmitting
+              ? "Saving…"
+              : editingShift
+                ? "Save changes"
+                : "Create shift"}
+          </button>
+        </div>
       </form>
 
-      {error && <div className="error-message schedule-error">{error}</div>}
+      {error && (
+        <div className="error-message schedule-error">
+          {error}
+        </div>
+      )}
+
+      <div className="schedule-toolbar">
+        <div className="schedule-filters">
+          <label>
+            Employee
+            <select
+              value={employeeFilter}
+              onChange={(event) =>
+                setEmployeeFilter(event.target.value)
+              }
+            >
+              <option value="">All employees</option>
+
+              {employees.map((employee) => (
+                <option key={employee.id} value={employee.id}>
+                  {employee.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            Project
+            <select
+              value={projectFilter}
+              onChange={(event) =>
+                setProjectFilter(event.target.value)
+              }
+            >
+              <option value="">All projects</option>
+
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {(employeeFilter || projectFilter) && (
+            <button
+              type="button"
+              className="clear-filters"
+              onClick={() => {
+                setEmployeeFilter("");
+                setProjectFilter("");
+              }}
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+
+        <span className="visible-shifts-count">
+         {filteredShifts.length}{" "}
+         {filteredShifts.length === 1 ? "visible shift" : "visible shifts"}
+        </span>
+      </div>
+
+      {holidayWarning && (
+        <div className="warning-message">
+          Public holidays are temporarily unavailable. Shifts are
+          still displayed.
+        </div>
+      )}
 
       {isLoading ? (
         <p className="muted-text">Loading schedule…</p>
       ) : (
         <div className="calendar">
           {days.map((day) => {
-            const dayShifts = shifts.filter((shift) => {
+            const dayShifts = filteredShifts.filter((shift) => {
               const shiftDate = new Date(shift.startAt);
 
               return (
@@ -350,7 +624,6 @@ const [
                 shiftDate.getDate() === day.getDate()
               );
             });
-
 
             const dayHolidays = holidays.filter(
               (holiday) =>
@@ -362,7 +635,10 @@ const [
               day.toDateString() === new Date().toDateString();
 
             return (
-              <div className="calendar-day" key={day.toISOString()}>
+              <div
+                className="calendar-day"
+                key={day.toISOString()}
+              >
                 <header className={isToday ? "today" : undefined}>
                   <span>
                     {day.toLocaleDateString("en-GB", {
@@ -374,7 +650,10 @@ const [
                 </header>
 
                 {dayHolidays.map((holiday) => (
-                  <div className="holiday-label" key={holiday.id}>
+                  <div
+                    className="holiday-label"
+                    key={holiday.id}
+                  >
                     <span>Public holiday</span>
                     <strong>{holiday.name}</strong>
                   </div>
@@ -386,12 +665,15 @@ const [
                   )}
 
                   {dayShifts.map((shift) => (
-                    <article
+                    <button
                       className="shift-card"
                       key={shift.id}
+                      type="button"
+                      title="Edit shift"
                       style={{
                         borderLeftColor: shift.project.color,
                       }}
+                      onClick={() => startEditingShift(shift)}
                     >
                       <strong>{shift.project.name}</strong>
 
@@ -404,7 +686,7 @@ const [
                       <p>{shift.employee.name}</p>
 
                       {shift.note && <small>{shift.note}</small>}
-                    </article>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -414,4 +696,4 @@ const [
       )}
     </section>
   );
-} 
+}

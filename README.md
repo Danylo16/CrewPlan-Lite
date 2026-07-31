@@ -10,15 +10,19 @@ CrewPlan prevents overlapping employee shifts, visualizes projects with distinct
 
 ## Features
 
-- Weekly workforce calendar
+- Weekly workforce calendar with week navigation
 - Employee and project management
+- Create, edit, and delete shift assignments
+- Filter schedule by employee and project
 - Color-coded project assignments
-- Server-side shift conflict detection
-- Support for shifts spanning multiple dates
-- Austrian public holiday integration
+- Server-side conflict detection during shift creation and editing
+- Adjacent shift support
+- Overnight and multi-date shifts
+- Austrian public holiday integration with graceful failure handling
 - Input validation and structured API errors
-- PostgreSQL persistence
+- PostgreSQL persistence through Prisma ORM
 - Automated API and business-rule tests
+- Continuous integration with GitHub Actions
 
 ## Tech Stack
 
@@ -88,15 +92,18 @@ POST /api/employees
 ### Projects
 
 ```http
-GET  /api/projects
-POST /api/projects
+GET   /api/projects
+POST  /api/projects
+PATCH /api/projects/:id
 ```
 
 ### Shifts
 
 ```http
-GET  /api/shifts?from=<ISO_DATE>&to=<ISO_DATE>
-POST /api/shifts
+GET    /api/shifts?from=<ISO_DATE>&to=<ISO_DATE>
+POST   /api/shifts
+PATCH  /api/shifts/:id
+DELETE /api/shifts/:id
 ```
 
 ### Public holidays
@@ -122,8 +129,8 @@ GET /api/health
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/Danylo16/crewplan-lite.git
-cd crewplan-lite
+git clone https://github.com/Danylo16/CrewPlan-Lite.git
+cd CrewPlan-Lite
 ```
 
 ### 2. Install frontend dependencies
@@ -169,6 +176,8 @@ yarn prisma generate
 
 ### 6. Start the backend
 
+From the server directory:
+
 ```bash
 yarn dev
 ```
@@ -207,8 +216,19 @@ The test suite covers:
 - API health status
 - Invalid shift input
 - Invalid time ranges
-- Overlapping shifts
+- Shift conflict detection
 - Adjacent shifts
+- Successful shift updates
+- Conflict detection during updates
+- Missing shift handling
+- Shift deletion
+
+Type-check the backend:
+
+```bash
+yarn tsc --noEmit
+```
+Tests and production builds are also executed automatically by GitHub Actions on every push and pull request to main.
 
 ## Production Build
 
@@ -246,9 +266,9 @@ crewplan-lite/
 
 ## Future Improvements
 
-- Editing and deleting shifts
 - Authentication and role-based access
-- Employee availability rules
-- Filtering by employee or project
-- Dedicated handling for overnight shifts
+- Employee availability and working-hour limits
+- Drag-and-drop shift rescheduling
+- Improved visualization of overnight shifts across multiple calendar days
 - End-to-end browser tests
+- Audit history for schedule changes

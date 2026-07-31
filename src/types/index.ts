@@ -15,6 +15,10 @@ export interface Project {
   updatedAt: string;
 }
 
+export interface ProjectWithCount extends Project {
+  shiftCount: number;
+}
+
 export interface Shift {
   id: number;
   employeeId: number;
