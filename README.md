@@ -8,6 +8,13 @@ CrewPlan prevents overlapping employee shifts, visualizes projects with distinct
 
 ![CrewPlan weekly schedule](docs/image.png)
 
+## Live Demo
+
+- [Open CrewPlan Lite](https://crew-plan-lite.vercel.app/)
+- [API health check](https://crewplan-lite.onrender.com/api/health)
+
+> The API is hosted on a free Render instance and may require up to one minute to wake up after inactivity.
+
 ## Features
 
 - Weekly workforce calendar with week navigation
