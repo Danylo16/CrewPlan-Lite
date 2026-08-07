@@ -11,12 +11,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "luxon": "^3.7.2",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-router-dom": "^7.18.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/luxon": "^3.7.3",
     "@types/node": "^24.13.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
