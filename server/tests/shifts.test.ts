@@ -13,6 +13,18 @@ const prismaMock = vi.hoisted(() => ({
     findUnique: vi.fn(),
     create: vi.fn(),
   },
+  skill: {
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    delete: vi.fn(),
+  },
+  projectRequirement: {
+    findMany: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+  },
   shift: {
     findMany: vi.fn(),
     findFirst: vi.fn(),
@@ -64,6 +76,84 @@ describe("CrewPlan API", () => {
 
     expect(response.status).toBe(400);
     expect(response.body.code).toBe("INVALID_TIME_RANGE");
+  });
+
+  it("rejects an employee profile with overlapping availability", async () => {
+    const response = await request(app)
+      .put("/api/employees/1/scheduling-profile")
+      .send({
+        preferredWeeklyMinutes: 1800,
+        maxWeeklyMinutes: 2400,
+        skills: [],
+        availability: [
+          {
+            dayOfWeek: "MONDAY",
+            startMinute: 540,
+            endMinute: 780,
+          },
+          {
+            dayOfWeek: "MONDAY",
+            startMinute: 720,
+            endMinute: 1020,
+          },
+        ],
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("rejects a requirement skill level without a selected skill", async () => {
+    const response = await request(app)
+      .post("/api/project-requirements")
+      .send({
+        projectId: 1,
+        dayOfWeek: "MONDAY",
+        startMinute: 540,
+        endMinute: 1020,
+        requiredEmployees: 2,
+        requiredSkillId: null,
+        minimumSkillLevel: 3,
+        priority: "HIGH",
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("creates a valid project staffing requirement", async () => {
+    prismaMock.project.findUnique.mockResolvedValue({ id: 1 });
+    prismaMock.skill.findUnique.mockResolvedValue({ id: 2 });
+    prismaMock.projectRequirement.create.mockResolvedValue({
+      id: 20,
+      projectId: 1,
+      dayOfWeek: "MONDAY",
+      startMinute: 540,
+      endMinute: 1020,
+      requiredEmployees: 2,
+      requiredSkillId: 2,
+      minimumSkillLevel: 3,
+      priority: "HIGH",
+      project: { id: 1, name: "Mobile Banking" },
+      requiredSkill: { id: 2, name: "TypeScript" },
+    });
+
+    const response = await request(app)
+      .post("/api/project-requirements")
+      .send({
+        projectId: 1,
+        dayOfWeek: "MONDAY",
+        startMinute: 540,
+        endMinute: 1020,
+        requiredEmployees: 2,
+        requiredSkillId: 2,
+        minimumSkillLevel: 3,
+        priority: "HIGH",
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.id).toBe(20);
+    expect(prismaMock.projectRequirement.create).toHaveBeenCalledOnce();
   });
 
   it("rejects an overlapping shift", async () => {

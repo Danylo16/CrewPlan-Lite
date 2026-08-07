@@ -5,10 +5,88 @@ import { prisma } from "../lib/prisma.js";
 
 export const employeeRouter = Router();
 
+const dayOfWeekSchema = z.enum([
+  "MONDAY",
+  "TUESDAY",
+  "WEDNESDAY",
+  "THURSDAY",
+  "FRIDAY",
+  "SATURDAY",
+  "SUNDAY",
+]);
+
+const employeeIdSchema = z.coerce.number().int().positive();
+
 const createEmployeeSchema = z.object({
   name: z.string().trim().min(2).max(100),
   email: z.string().trim().email().toLowerCase(),
   role: z.string().trim().min(2).max(100),
+  preferredWeeklyMinutes: z.number().int().min(0).max(10080).default(1920),
+  maxWeeklyMinutes: z.number().int().positive().max(10080).default(2400),
+}).refine(
+  (data) => data.preferredWeeklyMinutes <= data.maxWeeklyMinutes,
+  {
+    message: "Preferred weekly minutes cannot exceed the maximum",
+    path: ["preferredWeeklyMinutes"],
+  },
+);
+
+const schedulingProfileSchema = z.object({
+  preferredWeeklyMinutes: z.number().int().min(0).max(10080),
+  maxWeeklyMinutes: z.number().int().positive().max(10080),
+  skills: z.array(z.object({
+    skillId: z.number().int().positive(),
+    level: z.number().int().min(1).max(5),
+  })).max(50),
+  availability: z.array(z.object({
+    dayOfWeek: dayOfWeekSchema,
+    startMinute: z.number().int().min(0).max(1439),
+    endMinute: z.number().int().min(1).max(1440),
+  }).refine((slot) => slot.startMinute < slot.endMinute, {
+    message: "Availability end must be after its start",
+    path: ["endMinute"],
+  })).max(50),
+}).superRefine((data, context) => {
+  if (data.preferredWeeklyMinutes > data.maxWeeklyMinutes) {
+    context.addIssue({
+      code: "custom",
+      message: "Preferred weekly minutes cannot exceed the maximum",
+      path: ["preferredWeeklyMinutes"],
+    });
+  }
+
+  const skillIds = data.skills.map((skill) => skill.skillId);
+  if (new Set(skillIds).size !== skillIds.length) {
+    context.addIssue({
+      code: "custom",
+      message: "A skill may only appear once",
+      path: ["skills"],
+    });
+  }
+
+  const sortedSlots = [...data.availability].sort((first, second) =>
+    first.dayOfWeek.localeCompare(second.dayOfWeek)
+      || first.startMinute - second.startMinute,
+  );
+
+  for (let index = 1; index < sortedSlots.length; index += 1) {
+    const previous = sortedSlots[index - 1];
+    const current = sortedSlots[index];
+
+    if (
+      previous
+      && current
+      && previous.dayOfWeek === current.dayOfWeek
+      && current.startMinute < previous.endMinute
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Availability intervals cannot overlap",
+        path: ["availability"],
+      });
+      break;
+    }
+  }
 });
 
 employeeRouter.get("/", async (_request, response) => {
@@ -19,6 +97,107 @@ employeeRouter.get("/", async (_request, response) => {
   });
 
   response.json(employees);
+});
+
+employeeRouter.get("/:id/scheduling-profile", async (request, response) => {
+  const idResult = employeeIdSchema.safeParse(request.params.id);
+
+  if (!idResult.success) {
+    return response.status(400).json({
+      code: "VALIDATION_ERROR",
+      message: "Invalid employee id",
+    });
+  }
+
+  const employee = await prisma.employee.findUnique({
+    where: { id: idResult.data },
+    include: {
+      skills: {
+        include: { skill: true },
+        orderBy: { skillId: "asc" },
+      },
+      availability: {
+        orderBy: [
+          { dayOfWeek: "asc" },
+          { startMinute: "asc" },
+        ],
+      },
+    },
+  });
+
+  if (!employee) {
+    return response.status(404).json({
+      code: "EMPLOYEE_NOT_FOUND",
+      message: "Employee does not exist",
+    });
+  }
+
+  return response.json(employee);
+});
+
+employeeRouter.put("/:id/scheduling-profile", async (request, response) => {
+  const idResult = employeeIdSchema.safeParse(request.params.id);
+  const bodyResult = schedulingProfileSchema.safeParse(request.body);
+
+  if (!idResult.success || !bodyResult.success) {
+    return response.status(400).json({
+      code: "VALIDATION_ERROR",
+      message: "Invalid scheduling profile",
+      errors: bodyResult.success ? [] : bodyResult.error.issues,
+    });
+  }
+
+  const employeeId = idResult.data;
+  const profile = bodyResult.data;
+  const [employee, skills] = await Promise.all([
+    prisma.employee.findUnique({ where: { id: employeeId } }),
+    prisma.skill.findMany({
+      where: { id: { in: profile.skills.map((skill) => skill.skillId) } },
+      select: { id: true },
+    }),
+  ]);
+
+  if (!employee) {
+    return response.status(404).json({
+      code: "EMPLOYEE_NOT_FOUND",
+      message: "Employee does not exist",
+    });
+  }
+
+  if (skills.length !== profile.skills.length) {
+    return response.status(400).json({
+      code: "UNKNOWN_SKILL",
+      message: "At least one selected skill does not exist",
+    });
+  }
+
+  const updatedEmployee = await prisma.$transaction(async (transaction) => {
+    await transaction.employeeSkill.deleteMany({ where: { employeeId } });
+    await transaction.employeeAvailability.deleteMany({ where: { employeeId } });
+
+    return transaction.employee.update({
+      where: { id: employeeId },
+      data: {
+        preferredWeeklyMinutes: profile.preferredWeeklyMinutes,
+        maxWeeklyMinutes: profile.maxWeeklyMinutes,
+        skills: {
+          create: profile.skills.map((skill) => ({
+            level: skill.level,
+            skill: { connect: { id: skill.skillId } },
+          })),
+        },
+        availability: {
+          create: profile.availability,
+        },
+      },
+      include: {
+        skills: { include: { skill: true } },
+        availability: true,
+      },
+    });
+  });
+
+  return response.json(updatedEmployee);
 });
 
 employeeRouter.post("/", async (request, response) => {
