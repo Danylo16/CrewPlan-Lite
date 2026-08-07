@@ -1,61 +1,61 @@
-import { createHash } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
+import {
+  Prisma,
+} from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
-import { generateSchedule } from "../scheduling/generateSchedule.js";
+import {
+  buildSchedulePreview,
+  ScheduleInputTooLargeError,
+} from "../scheduling/schedulePreview.js";
 import {
   getWeekWindowUtc,
   parseWeekStart,
-  scheduleIntervalToUtc,
-  SCHEDULE_TIME_ZONE,
-  splitExistingShiftIntoDays,
 } from "../scheduling/timeAdapter.js";
-import type { SchedulingInput } from "../scheduling/types.js";
 
 export const scheduleRouter = Router();
 
-const MAX_EMPLOYEES = 50;
-const MAX_REQUIREMENTS = 100;
-const MAX_STAFFING_POSITIONS = 300;
+const hashSchema = z
+  .string()
+  .regex(/^[a-f0-9]{64}$/);
 
-const generateScheduleSchema = z.object({
+const scheduleRequestSchema = z.object({
   weekStart: z.string(),
   replaceExisting: z.boolean().default(false),
 });
 
-function hash(value: unknown) {
-  return createHash("sha256")
-    .update(JSON.stringify(value))
-    .digest("hex");
-}
+const applyScheduleSchema =
+  scheduleRequestSchema.extend({
+    previewId: hashSchema,
+    inputVersion: hashSchema,
+  });
 
-scheduleRouter.post("/generate", async (request, response) => {
-  const validationResult =
-    generateScheduleSchema.safeParse(request.body);
-
-  if (!validationResult.success) {
-    return response.status(400).json({
-      code: "VALIDATION_ERROR",
-      message: "Invalid schedule generation request",
-      errors: validationResult.error.issues,
+function scheduleRequestError(
+  error: unknown,
+  response: Parameters<
+    Parameters<typeof scheduleRouter.post>[1]
+  >[1],
+) {
+  if (
+    error instanceof ScheduleInputTooLargeError
+  ) {
+    return response.status(422).json({
+      code: error.message,
+      message:
+        "Schedule exceeds the portfolio solver limits",
+      limits: error.limits,
     });
   }
 
-  const {
-    weekStart: weekStartValue,
-    replaceExisting,
-  } = validationResult.data;
+  const code =
+    error instanceof Error
+      ? error.message
+      : "INTERNAL_SERVER_ERROR";
 
-  let weekStart;
-
-  try {
-    weekStart = parseWeekStart(weekStartValue);
-  } catch (error) {
-    const code =
-      error instanceof Error
-        ? error.message
-        : "WEEK_START_INVALID";
-
+  if (
+    code === "WEEK_START_INVALID" ||
+    code === "WEEK_START_NOT_MONDAY"
+  ) {
     return response.status(400).json({
       code,
       message:
@@ -65,160 +65,220 @@ scheduleRouter.post("/generate", async (request, response) => {
     });
   }
 
-  const weekWindow = getWeekWindowUtc(weekStart);
+  throw error;
+}
 
-  const [employees, requirements, shifts] =
-    await Promise.all([
-      prisma.employee.findMany({
-        take: MAX_EMPLOYEES + 1,
-        include: {
-          skills: true,
-          availability: true,
-        },
-        orderBy: {
-          id: "asc",
-        },
-      }),
-
-      prisma.projectRequirement.findMany({
-        take: MAX_REQUIREMENTS + 1,
-        orderBy: {
-          id: "asc",
-        },
-      }),
-
-      prisma.shift.findMany({
-        where: {
-          startAt: {
-            lt: weekWindow.endAt,
-          },
-          endAt: {
-            gt: weekWindow.startAt,
-          },
-        },
-        orderBy: {
-          id: "asc",
-        },
-      }),
-    ]);
-
-  const requestedPositions = requirements.reduce(
-    (total, requirement) =>
-      total + requirement.requiredEmployees,
-    0,
-  );
-
-  if (
-    employees.length > MAX_EMPLOYEES ||
-    requirements.length > MAX_REQUIREMENTS ||
-    requestedPositions > MAX_STAFFING_POSITIONS
-  ) {
-    return response.status(422).json({
-      code: "SCHEDULE_INPUT_TOO_LARGE",
-      message:
-        "Schedule exceeds the portfolio solver limits",
-      limits: {
-        employees: MAX_EMPLOYEES,
-        requirements: MAX_REQUIREMENTS,
-        staffingPositions: MAX_STAFFING_POSITIONS,
-      },
-    });
-  }
-
-  const schedulingInput: SchedulingInput = {
-    employees: employees.map((employee) => ({
-      id: employee.id,
-
-      preferredWeeklyMinutes:
-        employee.preferredWeeklyMinutes,
-
-      maxWeeklyMinutes:
-        employee.maxWeeklyMinutes,
-
-      skills: employee.skills.map((skill) => ({
-        skillId: skill.skillId,
-        level: skill.level,
-      })),
-
-      availability: employee.availability.map(
-        (availability) => ({
-          dayOfWeek: availability.dayOfWeek,
-          startMinute: availability.startMinute,
-          endMinute: availability.endMinute,
-        }),
-      ),
-    })),
-
-    requirements: requirements.map((requirement) => ({
-      id: requirement.id,
-      projectId: requirement.projectId,
-      dayOfWeek: requirement.dayOfWeek,
-      startMinute: requirement.startMinute,
-      endMinute: requirement.endMinute,
-
-      requiredEmployees:
-        requirement.requiredEmployees,
-
-      requiredSkillId:
-        requirement.requiredSkillId,
-
-      minimumSkillLevel:
-        requirement.minimumSkillLevel,
-
-      priority: requirement.priority,
-    })),
-
-    existingShifts: replaceExisting
-      ? []
-      : shifts.flatMap((shift) =>
-          splitExistingShiftIntoDays(
-            shift,
-            weekStart,
-          ),
-        ),
-  };
-
-  const inputVersion = hash({
-    weekStart: weekStartValue,
-    replaceExisting,
-    schedulingInput,
-    storedShiftIds: shifts.map((shift) => shift.id),
-  });
-
-  const result = generateSchedule(schedulingInput);
-
-  const assignments = result.assignments.map(
-    (assignment) => {
-      const interval = scheduleIntervalToUtc(
-        weekStart,
-        assignment.dayOfWeek,
-        assignment.startMinute,
-        assignment.endMinute,
+scheduleRouter.post(
+  "/generate",
+  async (request, response) => {
+    const validationResult =
+      scheduleRequestSchema.safeParse(
+        request.body,
       );
 
-      return {
-        ...assignment,
-        startAt: interval.startAt.toISOString(),
-        endAt: interval.endAt.toISOString(),
-      };
-    },
-  );
+    if (!validationResult.success) {
+      return response.status(400).json({
+        code: "VALIDATION_ERROR",
+        message:
+          "Invalid schedule generation request",
+        errors:
+          validationResult.error.issues,
+      });
+    }
 
-  const previewId = hash({
-    inputVersion,
-    assignments,
-    unfilledPositions: result.unfilledPositions,
-  });
+    try {
+      const preview =
+        await buildSchedulePreview(
+          prisma,
+          validationResult.data.weekStart,
+          validationResult.data
+            .replaceExisting,
+        );
 
-  return response.json({
-    previewId,
-    inputVersion,
-    weekStart: weekStartValue,
-    timezone: SCHEDULE_TIME_ZONE,
-    replaceExisting,
-    assignments,
-    unfilledRequirements:
-      result.unfilledPositions,
-    metrics: result.metrics,
-  });
-});
+      return response.json(preview);
+    } catch (error) {
+      return scheduleRequestError(
+        error,
+        response,
+      );
+    }
+  },
+);
+
+scheduleRouter.post(
+  "/apply",
+  async (request, response) => {
+    const validationResult =
+      applyScheduleSchema.safeParse(
+        request.body,
+      );
+
+    if (!validationResult.success) {
+      return response.status(400).json({
+        code: "VALIDATION_ERROR",
+        message:
+          "Invalid schedule apply request",
+        errors:
+          validationResult.error.issues,
+      });
+    }
+
+    const {
+      weekStart: weekStartValue,
+      replaceExisting,
+      previewId,
+      inputVersion,
+    } = validationResult.data;
+
+    try {
+      const applied =
+        await prisma.$transaction(
+          async (transaction) => {
+            const currentPreview =
+              await buildSchedulePreview(
+                transaction,
+                weekStartValue,
+                replaceExisting,
+              );
+
+            if (
+              currentPreview.inputVersion !==
+                inputVersion ||
+              currentPreview.previewId !==
+                previewId
+            ) {
+              throw new Error(
+                "SCHEDULE_PREVIEW_STALE",
+              );
+            }
+
+            let deletedShifts = 0;
+
+            if (replaceExisting) {
+              const weekStart =
+                parseWeekStart(
+                  weekStartValue,
+                );
+
+              const weekWindow =
+                getWeekWindowUtc(weekStart);
+
+              const deletion =
+                await transaction.shift
+                  .deleteMany({
+                    where: {
+                      startAt: {
+                        lt: weekWindow.endAt,
+                      },
+                      endAt: {
+                        gt: weekWindow.startAt,
+                      },
+                    },
+                  });
+
+              deletedShifts =
+                deletion.count;
+            }
+
+            const creation =
+              currentPreview.assignments
+                .length === 0
+                ? { count: 0 }
+                : await transaction.shift
+                    .createMany({
+                      data: currentPreview
+                        .assignments
+                        .map(
+                          (assignment) => ({
+                            employeeId:
+                              assignment
+                                .employeeId,
+
+                            projectId:
+                              assignment
+                                .projectId,
+
+                            startAt:
+                              new Date(
+                                assignment
+                                  .startAt,
+                              ),
+
+                            endAt:
+                              new Date(
+                                assignment
+                                  .endAt,
+                              ),
+
+                            note:
+                              "Generated by CrewPlan scheduler",
+                          }),
+                        ),
+                    });
+
+            return {
+              previewId:
+                currentPreview.previewId,
+
+              inputVersion:
+                currentPreview.inputVersion,
+
+              createdShifts:
+                creation.count,
+
+              deletedShifts,
+
+              metrics:
+                currentPreview.metrics,
+            };
+          },
+          {
+            isolationLevel:
+              Prisma
+                .TransactionIsolationLevel
+                .Serializable,
+
+            maxWait: 5_000,
+            timeout: 15_000,
+          },
+        );
+
+      return response
+        .status(201)
+        .json(applied);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message ===
+          "SCHEDULE_PREVIEW_STALE"
+      ) {
+        return response.status(409).json({
+          code:
+            "SCHEDULE_PREVIEW_STALE",
+
+          message:
+            "Schedule data changed after the preview was generated",
+        });
+      }
+
+      if (
+        error instanceof
+          Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034"
+      ) {
+        return response.status(409).json({
+          code:
+            "SCHEDULE_CONCURRENT_MODIFICATION",
+
+          message:
+            "Schedule changed concurrently; generate a new preview",
+        });
+      }
+
+      return scheduleRequestError(
+        error,
+        response,
+      );
+    }
+  },
+);

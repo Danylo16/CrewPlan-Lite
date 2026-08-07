@@ -11,12 +11,18 @@ const prismaMock = vi.hoisted(() => ({
   employee: {
     findMany: vi.fn(),
   },
+
   projectRequirement: {
     findMany: vi.fn(),
   },
+
   shift: {
     findMany: vi.fn(),
+    deleteMany: vi.fn(),
+    createMany: vi.fn(),
   },
+
+  $transaction: vi.fn(),
 }));
 
 vi.mock("../src/lib/prisma.js", () => ({
@@ -62,14 +68,30 @@ describe("schedule generation API", () => {
   beforeEach(() => {
     vi.resetAllMocks();
 
-    prismaMock.employee.findMany.mockResolvedValue([
-      employee,
-    ]);
+    prismaMock.employee.findMany
+      .mockResolvedValue([employee]);
 
     prismaMock.projectRequirement.findMany
       .mockResolvedValue([requirement]);
 
-    prismaMock.shift.findMany.mockResolvedValue([]);
+    prismaMock.shift.findMany
+      .mockResolvedValue([]);
+
+    prismaMock.shift.deleteMany
+      .mockResolvedValue({
+        count: 0,
+      });
+
+    prismaMock.shift.createMany
+      .mockResolvedValue({
+        count: 1,
+      });
+
+    prismaMock.$transaction
+      .mockImplementation(
+        async (callback) =>
+          callback(prismaMock),
+      );
   });
 
   it("rejects a week start that is not Monday", async () => {
@@ -132,19 +154,26 @@ describe("schedule generation API", () => {
   });
 
   it("treats a stored shift as a conflict by default", async () => {
-    prismaMock.shift.findMany.mockResolvedValue([
-      {
-        id: 30,
-        employeeId: 1,
-        projectId: 99,
-        startAt: new Date(
-          "2026-08-10T07:00:00.000Z",
-        ),
-        endAt: new Date(
-          "2026-08-10T11:00:00.000Z",
-        ),
-      },
-    ]);
+    prismaMock.shift.findMany
+      .mockResolvedValue([
+        {
+          id: 30,
+          employeeId: 1,
+          projectId: 99,
+
+          startAt: new Date(
+            "2026-08-10T07:00:00.000Z",
+          ),
+
+          endAt: new Date(
+            "2026-08-10T11:00:00.000Z",
+          ),
+
+          updatedAt: new Date(
+            "2026-08-01T12:00:00.000Z",
+          ),
+        },
+      ]);
 
     const response = await request(app)
       .post("/api/schedule/generate")
@@ -164,19 +193,26 @@ describe("schedule generation API", () => {
   });
 
   it("ignores stored shifts when replacement is requested", async () => {
-    prismaMock.shift.findMany.mockResolvedValue([
-      {
-        id: 30,
-        employeeId: 1,
-        projectId: 99,
-        startAt: new Date(
-          "2026-08-10T07:00:00.000Z",
-        ),
-        endAt: new Date(
-          "2026-08-10T11:00:00.000Z",
-        ),
-      },
-    ]);
+    prismaMock.shift.findMany
+      .mockResolvedValue([
+        {
+          id: 30,
+          employeeId: 1,
+          projectId: 99,
+
+          startAt: new Date(
+            "2026-08-10T07:00:00.000Z",
+          ),
+
+          endAt: new Date(
+            "2026-08-10T11:00:00.000Z",
+          ),
+
+          updatedAt: new Date(
+            "2026-08-01T12:00:00.000Z",
+          ),
+        },
+      ]);
 
     const response = await request(app)
       .post("/api/schedule/generate")
@@ -188,5 +224,125 @@ describe("schedule generation API", () => {
     expect(response.status).toBe(200);
     expect(response.body.assignments).toHaveLength(1);
     expect(response.body.replaceExisting).toBe(true);
+  });
+
+  it("rejects a stale preview without writing shifts", async () => {
+    const response = await request(app)
+      .post("/api/schedule/apply")
+      .send({
+        weekStart: "2026-08-10",
+        previewId: "0".repeat(64),
+        inputVersion: "1".repeat(64),
+      });
+
+    expect(response.status).toBe(409);
+
+    expect(response.body.code).toBe(
+      "SCHEDULE_PREVIEW_STALE",
+    );
+
+    expect(
+      prismaMock.shift.createMany,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("rebuilds and applies a valid preview transactionally", async () => {
+    const previewResponse = await request(app)
+      .post("/api/schedule/generate")
+      .send({
+        weekStart: "2026-08-10",
+      });
+
+    const applyResponse = await request(app)
+      .post("/api/schedule/apply")
+      .send({
+        weekStart: "2026-08-10",
+
+        previewId:
+          previewResponse.body.previewId,
+
+        inputVersion:
+          previewResponse.body.inputVersion,
+      });
+
+    expect(applyResponse.status).toBe(201);
+
+    expect(
+      applyResponse.body.createdShifts,
+    ).toBe(1);
+
+    expect(
+      applyResponse.body.deletedShifts,
+    ).toBe(0);
+
+    expect(
+      prismaMock.shift.createMany,
+    ).toHaveBeenCalledOnce();
+
+    expect(
+      prismaMock.shift.deleteMany,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("replaces overlapping week shifts inside the transaction", async () => {
+    prismaMock.shift.findMany
+      .mockResolvedValue([
+        {
+          id: 30,
+          employeeId: 1,
+          projectId: 99,
+
+          startAt: new Date(
+            "2026-08-10T07:00:00.000Z",
+          ),
+
+          endAt: new Date(
+            "2026-08-10T11:00:00.000Z",
+          ),
+
+          updatedAt: new Date(
+            "2026-08-01T12:00:00.000Z",
+          ),
+        },
+      ]);
+
+    prismaMock.shift.deleteMany
+      .mockResolvedValue({
+        count: 1,
+      });
+
+    const previewResponse = await request(app)
+      .post("/api/schedule/generate")
+      .send({
+        weekStart: "2026-08-10",
+        replaceExisting: true,
+      });
+
+    const applyResponse = await request(app)
+      .post("/api/schedule/apply")
+      .send({
+        weekStart: "2026-08-10",
+        replaceExisting: true,
+
+        previewId:
+          previewResponse.body.previewId,
+
+        inputVersion:
+          previewResponse.body.inputVersion,
+      });
+
+    expect(applyResponse.status).toBe(201);
+
+    expect(
+      applyResponse.body.deletedShifts,
+    ).toBe(1);
+
+    expect(
+      prismaMock.shift.deleteMany,
+    ).toHaveBeenCalledOnce();
+
+    expect(
+      prismaMock.shift.createMany,
+    ).toHaveBeenCalledOnce();
   });
 });
