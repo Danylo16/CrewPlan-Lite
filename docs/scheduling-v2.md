@@ -41,7 +41,7 @@ may be changed after measuring demo scenarios.
 | Unfilled normal position | 1,000 |
 | Unfilled low-priority position | 500 |
 | Minute above an employee's preferred weekly limit | 2 |
-| Workload imbalance between assigned employees, per minute | 1 |
+| Workload imbalance between employees | 1 per 10 minutes |
 
 Priority affects which requirement remains unfilled; it never permits a hard
 constraint violation.
