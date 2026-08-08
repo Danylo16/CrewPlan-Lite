@@ -87,6 +87,8 @@ export interface UnfilledPosition {
 export interface SchedulingMetrics {
   requestedPositions: number;
   assignedPositions: number;
+  existingPositions: number;
+  proposedPositions: number;
   unfilledPositions: number;
   coveragePercent: number;
   assignedMinutes: number;

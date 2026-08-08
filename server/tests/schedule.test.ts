@@ -192,6 +192,63 @@ describe("schedule generation API", () => {
     ).toBe(1);
   });
 
+  it("counts a matching stored shift as fulfilled and creates no duplicate", async () => {
+    prismaMock.shift.findMany.mockResolvedValue([{
+      id: 31,
+      employeeId: 1,
+      projectId: 2,
+      startAt: new Date("2026-08-10T07:00:00.000Z"),
+      endAt: new Date("2026-08-10T15:00:00.000Z"),
+      updatedAt: new Date("2026-08-01T12:00:00.000Z"),
+    }]);
+
+    const response = await request(app)
+      .post("/api/schedule/generate")
+      .send({ weekStart: "2026-08-10" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.assignments).toHaveLength(0);
+    expect(response.body.existingAssignments).toEqual([{
+      shiftId: 31,
+      requirementId: 10,
+      positionIndex: 0,
+      employeeId: 1,
+      projectId: 2,
+    }]);
+    expect(response.body.unfilledRequirements).toHaveLength(0);
+    expect(response.body.metrics).toMatchObject({
+      requestedPositions: 1,
+      assignedPositions: 1,
+      existingPositions: 1,
+      proposedPositions: 0,
+      coveragePercent: 100,
+    });
+  });
+
+  it("does not count a matching shift when the employee lacks the skill", async () => {
+    prismaMock.employee.findMany.mockResolvedValue([{
+      ...employee,
+      skills: [{ skillId: 1, level: 2 }],
+    }]);
+    prismaMock.shift.findMany.mockResolvedValue([{
+      id: 32,
+      employeeId: 1,
+      projectId: 2,
+      startAt: new Date("2026-08-10T07:00:00.000Z"),
+      endAt: new Date("2026-08-10T15:00:00.000Z"),
+      updatedAt: new Date("2026-08-01T12:00:00.000Z"),
+    }]);
+
+    const response = await request(app)
+      .post("/api/schedule/generate")
+      .send({ weekStart: "2026-08-10" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.existingAssignments).toHaveLength(0);
+    expect(response.body.metrics.coveragePercent).toBe(0);
+    expect(response.body.unfilledRequirements).toHaveLength(1);
+  });
+
   it("ignores stored shifts when replacement is requested", async () => {
     prismaMock.shift.findMany
       .mockResolvedValue([

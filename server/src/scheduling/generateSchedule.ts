@@ -333,6 +333,8 @@ export function generateSchedule(input: SchedulingInput): SchedulingResult {
     metrics: {
       requestedPositions,
       assignedPositions,
+      existingPositions: 0,
+      proposedPositions: assignedPositions,
       unfilledPositions: unfilledPositions.length,
       coveragePercent: requestedPositions === 0
         ? 100

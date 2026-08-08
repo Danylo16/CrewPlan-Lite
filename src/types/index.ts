@@ -77,6 +77,8 @@ export interface UnfilledRequirement {
 export interface ScheduleMetrics {
   requestedPositions: number;
   assignedPositions: number;
+  existingPositions: number;
+  proposedPositions: number;
   unfilledPositions: number;
   coveragePercent: number;
   assignedMinutes: number;

@@ -441,6 +441,16 @@ textarea {
   background: #fffaf2;
 }
 
+.unfilled-requirements summary {
+  cursor: pointer;
+  font-weight: 700;
+  list-style-position: inside;
+}
+
+.unfilled-requirements[open] summary {
+  padding-bottom: 5px;
+}
+
 .unfilled-item {
   display: flex;
   align-items: flex-start;
