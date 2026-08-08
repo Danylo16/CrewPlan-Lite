@@ -103,6 +103,77 @@ describe("CrewPlan API", () => {
     expect(response.body.code).toBe("VALIDATION_ERROR");
   });
 
+  it("creates a scheduler-ready employee profile atomically", async () => {
+    prismaMock.skill.findMany.mockResolvedValue([{ id: 2 }]);
+    prismaMock.employee.create.mockResolvedValue({
+      id: 9,
+      name: "Mia Berger",
+      email: "mia@crewplan.at",
+      role: "Backend Developer",
+      preferredWeeklyMinutes: 1920,
+      maxWeeklyMinutes: 2400,
+      hourlyCostCents: 4200,
+      overtimeRateBasisPoints: 15000,
+      skills: [{ skillId: 2, level: 4 }],
+      availability: [{ dayOfWeek: "MONDAY", startMinute: 540, endMinute: 1020 }],
+    });
+
+    const response = await request(app).post("/api/employees").send({
+      name: "Mia Berger",
+      email: "mia@crewplan.at",
+      role: "Backend Developer",
+      preferredWeeklyMinutes: 1920,
+      maxWeeklyMinutes: 2400,
+      hourlyCostCents: 4200,
+      overtimeRateBasisPoints: 15000,
+      skills: [{ skillId: 2, level: 4 }],
+      availability: [{ dayOfWeek: "MONDAY", startMinute: 540, endMinute: 1020 }],
+    });
+
+    expect(response.status).toBe(201);
+    expect(prismaMock.employee.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        hourlyCostCents: 4200,
+        skills: { create: [expect.objectContaining({ level: 4 })] },
+      }),
+    }));
+  });
+
+  it("creates a project together with its budget and requirements", async () => {
+    prismaMock.skill.findMany.mockResolvedValue([{ id: 2 }]);
+    prismaMock.project.create.mockResolvedValue({
+      id: 4,
+      name: "Payments",
+      color: "#2563EB",
+      weeklyLaborBudgetCents: 800000,
+      _count: { shifts: 0, requirements: 1 },
+    });
+
+    const response = await request(app).post("/api/projects").send({
+      name: "Payments",
+      color: "#2563EB",
+      weeklyLaborBudgetCents: 800000,
+      requirements: [{
+        dayOfWeek: "MONDAY",
+        startMinute: 540,
+        endMinute: 1020,
+        requiredEmployees: 2,
+        requiredSkillId: 2,
+        minimumSkillLevel: 3,
+        priority: "HIGH",
+      }],
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.body.requirementCount).toBe(1);
+    expect(prismaMock.project.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        weeklyLaborBudgetCents: 800000,
+        requirements: { create: [expect.objectContaining({ priority: "HIGH" })] },
+      }),
+    }));
+  });
+
   it("rejects a requirement skill level without a selected skill", async () => {
     const response = await request(app)
       .post("/api/project-requirements")

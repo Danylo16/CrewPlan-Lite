@@ -12,18 +12,45 @@ const projectColorSchema = z
   .trim()
   .regex(/^#[0-9A-Fa-f]{6}$/, "Color must be a valid hex value");
 
+const requirementSchema = z.object({
+  dayOfWeek: z.enum([
+    "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
+    "FRIDAY", "SATURDAY", "SUNDAY",
+  ]),
+  startMinute: z.number().int().min(0).max(1439),
+  endMinute: z.number().int().min(1).max(1440),
+  requiredEmployees: z.number().int().min(1).max(100),
+  requiredSkillId: z.number().int().positive().nullable(),
+  minimumSkillLevel: z.number().int().min(1).max(5),
+  priority: z.enum(["LOW", "NORMAL", "HIGH", "CRITICAL"]),
+}).refine((data) => data.startMinute < data.endMinute, {
+  message: "Requirement end must be after its start",
+  path: ["endMinute"],
+}).refine(
+  (data) => data.requiredSkillId !== null || data.minimumSkillLevel === 1,
+  {
+    message: "A skill level above one requires a selected skill",
+    path: ["minimumSkillLevel"],
+  },
+);
+
 const createProjectSchema = z.object({
   name: projectNameSchema,
   color: projectColorSchema.default("#6366F1"),
+  weeklyLaborBudgetCents: z.number().int().min(0).nullable(),
+  requirements: z.array(requirementSchema).min(1).max(100),
 });
 
 const updateProjectSchema = z
   .object({
     name: projectNameSchema.optional(),
     color: projectColorSchema.optional(),
+    weeklyLaborBudgetCents: z.number().int().min(0).nullable().optional(),
   })
   .refine(
-    (data) => data.name !== undefined || data.color !== undefined,
+    (data) => data.name !== undefined
+      || data.color !== undefined
+      || data.weeklyLaborBudgetCents !== undefined,
     {
       message: "At least one field must be provided",
     },
@@ -37,6 +64,7 @@ projectRouter.get("/", async (_request, response) => {
       _count: {
         select: {
           shifts: true,
+          requirements: true,
         },
       },
     },
@@ -48,6 +76,7 @@ projectRouter.get("/", async (_request, response) => {
   const result = projects.map(({ _count, ...project }) => ({
     ...project,
     shiftCount: _count.shifts,
+    requirementCount: _count.requirements,
   }));
 
   return response.json(result);
@@ -65,13 +94,44 @@ projectRouter.post("/", async (request, response) => {
   }
 
   try {
-    const project = await prisma.project.create({
-      data: validationResult.data,
+    const data = validationResult.data;
+    const requiredSkillIds = [...new Set(
+      data.requirements.flatMap((requirement) =>
+        requirement.requiredSkillId === null
+          ? []
+          : [requirement.requiredSkillId],
+      ),
+    )];
+    const skills = await prisma.skill.findMany({
+      where: { id: { in: requiredSkillIds } },
+      select: { id: true },
     });
 
+    if (skills.length !== requiredSkillIds.length) {
+      return response.status(400).json({
+        code: "UNKNOWN_SKILL",
+        message: "At least one required skill does not exist",
+      });
+    }
+
+    const project = await prisma.project.create({
+      data: {
+        name: data.name,
+        color: data.color,
+        weeklyLaborBudgetCents: data.weeklyLaborBudgetCents,
+        requirements: { create: data.requirements },
+      },
+      include: {
+        _count: { select: { shifts: true, requirements: true } },
+      },
+    });
+
+    const { _count, ...projectData } = project;
+
     return response.status(201).json({
-      ...project,
-      shiftCount: 0,
+      ...projectData,
+      shiftCount: _count.shifts,
+      requirementCount: _count.requirements,
     });
   } catch (error) {
     console.error(error);
@@ -103,6 +163,10 @@ projectRouter.patch("/:id", async (request, response) => {
     updateData.color = bodyResult.data.color;
   }
 
+  if (bodyResult.data.weeklyLaborBudgetCents !== undefined) {
+    updateData.weeklyLaborBudgetCents = bodyResult.data.weeklyLaborBudgetCents;
+  }
+
   try {
     const project = await prisma.project.update({
       where: {
@@ -112,7 +176,8 @@ projectRouter.patch("/:id", async (request, response) => {
       include: {
         _count: {
           select: {
-            shifts: true,
+          shifts: true,
+          requirements: true,
           },
         },
       },
@@ -123,6 +188,7 @@ projectRouter.patch("/:id", async (request, response) => {
     return response.json({
       ...projectData,
       shiftCount: _count.shifts,
+      requirementCount: _count.requirements,
     });
   } catch (error) {
     if (

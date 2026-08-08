@@ -17,20 +17,6 @@ const dayOfWeekSchema = z.enum([
 
 const employeeIdSchema = z.coerce.number().int().positive();
 
-const createEmployeeSchema = z.object({
-  name: z.string().trim().min(2).max(100),
-  email: z.string().trim().email().toLowerCase(),
-  role: z.string().trim().min(2).max(100),
-  preferredWeeklyMinutes: z.number().int().min(0).max(10080).default(1920),
-  maxWeeklyMinutes: z.number().int().positive().max(10080).default(2400),
-}).refine(
-  (data) => data.preferredWeeklyMinutes <= data.maxWeeklyMinutes,
-  {
-    message: "Preferred weekly minutes cannot exceed the maximum",
-    path: ["preferredWeeklyMinutes"],
-  },
-);
-
 const schedulingProfileSchema = z.object({
   preferredWeeklyMinutes: z.number().int().min(0).max(10080),
   maxWeeklyMinutes: z.number().int().positive().max(10080),
@@ -89,8 +75,43 @@ const schedulingProfileSchema = z.object({
   }
 });
 
+const createEmployeeSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  email: z.string().trim().email().toLowerCase(),
+  role: z.string().trim().min(2).max(100),
+  hourlyCostCents: z.number().int().min(0).max(10_000_000),
+  overtimeRateBasisPoints: z.number().int().min(10_000).max(50_000),
+  preferredWeeklyMinutes: z.number().int().min(0).max(10080),
+  maxWeeklyMinutes: z.number().int().positive().max(10080),
+  skills: schedulingProfileSchema.shape.skills,
+  availability: schedulingProfileSchema.shape.availability,
+}).superRefine((data, context) => {
+  const profileResult = schedulingProfileSchema.safeParse({
+    preferredWeeklyMinutes: data.preferredWeeklyMinutes,
+    maxWeeklyMinutes: data.maxWeeklyMinutes,
+    skills: data.skills,
+    availability: data.availability,
+  });
+
+  if (!profileResult.success) {
+    for (const issue of profileResult.error.issues) {
+      context.addIssue({
+        code: "custom",
+        message: issue.message,
+        path: issue.path,
+      });
+    }
+  }
+});
+
 employeeRouter.get("/", async (_request, response) => {
   const employees = await prisma.employee.findMany({
+    include: {
+      skills: { include: { skill: true }, orderBy: { skillId: "asc" } },
+      availability: {
+        orderBy: [{ dayOfWeek: "asc" }, { startMinute: "asc" }],
+      },
+    },
     orderBy: {
       createdAt: "desc",
     },
@@ -212,8 +233,40 @@ employeeRouter.post("/", async (request, response) => {
   }
 
   try {
+    const data = validationResult.data;
+    const skills = await prisma.skill.findMany({
+      where: { id: { in: data.skills.map((skill) => skill.skillId) } },
+      select: { id: true },
+    });
+
+    if (skills.length !== data.skills.length) {
+      return response.status(400).json({
+        code: "UNKNOWN_SKILL",
+        message: "At least one selected skill does not exist",
+      });
+    }
+
     const employee = await prisma.employee.create({
-      data: validationResult.data,
+      data: {
+        name: data.name,
+        email: data.email,
+        role: data.role,
+        hourlyCostCents: data.hourlyCostCents,
+        overtimeRateBasisPoints: data.overtimeRateBasisPoints,
+        preferredWeeklyMinutes: data.preferredWeeklyMinutes,
+        maxWeeklyMinutes: data.maxWeeklyMinutes,
+        skills: {
+          create: data.skills.map((skill) => ({
+            level: skill.level,
+            skill: { connect: { id: skill.skillId } },
+          })),
+        },
+        availability: { create: data.availability },
+      },
+      include: {
+        skills: { include: { skill: true } },
+        availability: true,
+      },
     });
 
     return response.status(201).json(employee);

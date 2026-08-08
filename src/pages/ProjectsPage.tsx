@@ -1,19 +1,40 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { apiRequest } from "../api/client";
-import type { ProjectWithCount } from "../types";
+import type { DayOfWeek, ProjectWithCount, RequirementPriority, Skill } from "../types";
+
+interface RequirementForm {
+  dayOfWeek: DayOfWeek;
+  start: string;
+  end: string;
+  requiredEmployees: number;
+  requiredSkillId: string;
+  minimumSkillLevel: number;
+  priority: RequirementPriority;
+}
 
 interface ProjectForm {
   name: string;
   color: string;
+  weeklyBudget: string;
+  requirements: RequirementForm[];
 }
+
+const initialRequirement = (): RequirementForm => ({
+  dayOfWeek: "MONDAY", start: "09:00", end: "17:00",
+  requiredEmployees: 1, requiredSkillId: "", minimumSkillLevel: 1,
+  priority: "NORMAL",
+});
 
 const initialForm: ProjectForm = {
   name: "",
   color: "#5267DF",
+  weeklyBudget: "5000",
+  requirements: [initialRequirement()],
 };
 
 export function ProjectsPage() {
   const [projects, setProjects] = useState<ProjectWithCount[]>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
   const [form, setForm] = useState<ProjectForm>(initialForm);
   const [editingProject, setEditingProject] =
     useState<ProjectWithCount | null>(null);
@@ -30,10 +51,12 @@ export function ProjectsPage() {
   useEffect(() => {
     async function loadProjects() {
       try {
-        const data =
-          await apiRequest<ProjectWithCount[]>("/projects");
-
+        const [data, skillData] = await Promise.all([
+          apiRequest<ProjectWithCount[]>("/projects"),
+          apiRequest<Skill[]>("/skills"),
+        ]);
         setProjects(data);
+        setSkills(skillData);
       } catch (loadError) {
         setError(
           loadError instanceof Error
@@ -50,7 +73,7 @@ export function ProjectsPage() {
 
   function openCreateModal() {
     setEditingProject(null);
-    setForm(initialForm);
+    setForm({ ...initialForm, requirements: [initialRequirement()] });
     setError(null);
     setIsModalOpen(true);
   }
@@ -60,6 +83,10 @@ export function ProjectsPage() {
     setForm({
       name: project.name,
       color: project.color,
+      weeklyBudget: project.weeklyLaborBudgetCents === null
+        ? ""
+        : String(project.weeklyLaborBudgetCents / 100),
+      requirements: [],
     });
     setError(null);
     setIsModalOpen(true);
@@ -70,7 +97,7 @@ export function ProjectsPage() {
 
     setIsModalOpen(false);
     setEditingProject(null);
-    setForm(initialForm);
+    setForm({ ...initialForm, requirements: [initialRequirement()] });
     setError(null);
   }
 
@@ -86,7 +113,36 @@ export function ProjectsPage() {
           : "/projects",
         {
           method: editingProject ? "PATCH" : "POST",
-          body: JSON.stringify(form),
+          body: JSON.stringify(editingProject ? {
+            name: form.name,
+            color: form.color,
+            weeklyLaborBudgetCents: form.weeklyBudget === ""
+              ? null
+              : Math.round(Number(form.weeklyBudget) * 100),
+          } : {
+            name: form.name,
+            color: form.color,
+            weeklyLaborBudgetCents: form.weeklyBudget === ""
+              ? null
+              : Math.round(Number(form.weeklyBudget) * 100),
+            requirements: form.requirements.map((requirement) => {
+              const [startHour, startMinute] = requirement.start.split(":").map(Number);
+              const [endHour, endMinute] = requirement.end.split(":").map(Number);
+              return {
+                dayOfWeek: requirement.dayOfWeek,
+                startMinute: startHour * 60 + startMinute,
+                endMinute: endHour * 60 + endMinute,
+                requiredEmployees: requirement.requiredEmployees,
+                requiredSkillId: requirement.requiredSkillId
+                  ? Number(requirement.requiredSkillId)
+                  : null,
+                minimumSkillLevel: requirement.requiredSkillId
+                  ? requirement.minimumSkillLevel
+                  : 1,
+                priority: requirement.priority,
+              };
+            }),
+          }),
         },
       );
 
@@ -197,6 +253,10 @@ export function ProjectsPage() {
                     ? "scheduled shift"
                     : "scheduled shifts"}
                 </p>
+                <p>{project.requirementCount} staffing requirements</p>
+                <p>{project.weeklyLaborBudgetCents === null
+                  ? "No weekly budget"
+                  : `€${(project.weeklyLaborBudgetCents / 100).toLocaleString("en-GB")} weekly budget`}</p>
               </div>
 
               <div className="project-tile-footer">
@@ -295,6 +355,31 @@ export function ProjectsPage() {
                   />
                 </div>
               </label>
+
+              <label>
+                Weekly labor budget (€)
+                <input type="number" min="0" step="0.01" value={form.weeklyBudget} onChange={(event) => setForm({ ...form, weeklyBudget: event.target.value })} />
+              </label>
+
+              {!editingProject && <div className="requirements-editor">
+                <div className="requirements-heading">
+                  <div><strong>Staffing requirements</strong><p>Define the demand this project adds to the scheduler.</p></div>
+                  <button className="secondary-button" type="button" onClick={() => setForm({ ...form, requirements: [...form.requirements, initialRequirement()] })}>+ Add requirement</button>
+                </div>
+
+                {form.requirements.map((requirement, index) => <div className="requirement-row" key={index}>
+                  <select aria-label="Day" value={requirement.dayOfWeek} onChange={(event) => {
+                    const requirements = [...form.requirements]; requirements[index] = { ...requirement, dayOfWeek: event.target.value as DayOfWeek }; setForm({ ...form, requirements });
+                  }}>{["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"].map((day) => <option key={day} value={day}>{day.slice(0, 3)}</option>)}</select>
+                  <input aria-label="Start" type="time" value={requirement.start} onChange={(event) => { const requirements = [...form.requirements]; requirements[index] = { ...requirement, start: event.target.value }; setForm({ ...form, requirements }); }} />
+                  <input aria-label="End" type="time" value={requirement.end} onChange={(event) => { const requirements = [...form.requirements]; requirements[index] = { ...requirement, end: event.target.value }; setForm({ ...form, requirements }); }} />
+                  <input aria-label="People" title="Required employees" type="number" min="1" max="100" value={requirement.requiredEmployees} onChange={(event) => { const requirements = [...form.requirements]; requirements[index] = { ...requirement, requiredEmployees: Number(event.target.value) }; setForm({ ...form, requirements }); }} />
+                  <select aria-label="Required skill" value={requirement.requiredSkillId} onChange={(event) => { const requirements = [...form.requirements]; requirements[index] = { ...requirement, requiredSkillId: event.target.value }; setForm({ ...form, requirements }); }}><option value="">Any skill</option>{skills.map((skill) => <option key={skill.id} value={skill.id}>{skill.name}</option>)}</select>
+                  <select aria-label="Minimum skill level" disabled={!requirement.requiredSkillId} value={requirement.minimumSkillLevel} onChange={(event) => { const requirements = [...form.requirements]; requirements[index] = { ...requirement, minimumSkillLevel: Number(event.target.value) }; setForm({ ...form, requirements }); }}>{[1, 2, 3, 4, 5].map((level) => <option key={level} value={level}>L{level}+</option>)}</select>
+                  <select aria-label="Priority" value={requirement.priority} onChange={(event) => { const requirements = [...form.requirements]; requirements[index] = { ...requirement, priority: event.target.value as RequirementPriority }; setForm({ ...form, requirements }); }}>{["LOW", "NORMAL", "HIGH", "CRITICAL"].map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select>
+                  <button className="remove-requirement" type="button" disabled={form.requirements.length === 1} onClick={() => setForm({ ...form, requirements: form.requirements.filter((_, itemIndex) => itemIndex !== index) })}>×</button>
+                </div>)}
+              </div>}
 
               <div
                 className="color-preview"

@@ -22,6 +22,8 @@ const employeeDefinitions = [
     role: "Frontend Developer",
     preferredWeeklyMinutes: 1920,
     maxWeeklyMinutes: 2400,
+    hourlyCostCents: 4200,
+    overtimeRateBasisPoints: 15000,
     skills: { React: 4, TypeScript: 4 },
     availability: WEEKDAYS.map((dayOfWeek) => ({
       dayOfWeek,
@@ -35,6 +37,8 @@ const employeeDefinitions = [
     role: "Technical Architect",
     preferredWeeklyMinutes: 2160,
     maxWeeklyMinutes: 2400,
+    hourlyCostCents: 6800,
+    overtimeRateBasisPoints: 17500,
     skills: { "Node.js": 5, PostgreSQL: 4, DevOps: 4 },
     availability: WEEKDAYS.map((dayOfWeek) => ({
       dayOfWeek,
@@ -48,6 +52,8 @@ const employeeDefinitions = [
     role: "Backend Developer",
     preferredWeeklyMinutes: 2160,
     maxWeeklyMinutes: 2400,
+    hourlyCostCents: 4800,
+    overtimeRateBasisPoints: 15000,
     skills: { "Node.js": 4, PostgreSQL: 4, TypeScript: 3 },
     availability: [
       ...WEEKDAYS.slice(0, 4).map((dayOfWeek) => ({
@@ -68,6 +74,8 @@ const employeeDefinitions = [
     role: "QA Engineer",
     preferredWeeklyMinutes: 1800,
     maxWeeklyMinutes: 2160,
+    hourlyCostCents: 3900,
+    overtimeRateBasisPoints: 15000,
     skills: { Testing: 5, TypeScript: 3 },
     availability: WEEKDAYS.slice(1).map((dayOfWeek) => ({
       dayOfWeek,
@@ -81,6 +89,8 @@ const employeeDefinitions = [
     role: "DevOps Engineer",
     preferredWeeklyMinutes: 1200,
     maxWeeklyMinutes: 1800,
+    hourlyCostCents: 5500,
+    overtimeRateBasisPoints: 17500,
     skills: { DevOps: 5, PostgreSQL: 3 },
     availability: [
       DayOfWeek.MONDAY,
@@ -129,7 +139,7 @@ const requirementDefinitions = [
     project: "Internal Dashboard",
     dayOfWeek: DayOfWeek.WEDNESDAY,
     startMinute: 600,
-    endMinute: 1020,
+    endMinute: 1080,
     requiredEmployees: 2,
     skill: "TypeScript",
     minimumSkillLevel: 3,
@@ -186,6 +196,8 @@ async function seedDemo() {
           role: definition.role,
           preferredWeeklyMinutes: definition.preferredWeeklyMinutes,
           maxWeeklyMinutes: definition.maxWeeklyMinutes,
+          hourlyCostCents: definition.hourlyCostCents,
+          overtimeRateBasisPoints: definition.overtimeRateBasisPoints,
         },
         create: {
           name: definition.name,
@@ -193,6 +205,8 @@ async function seedDemo() {
           role: definition.role,
           preferredWeeklyMinutes: definition.preferredWeeklyMinutes,
           maxWeeklyMinutes: definition.maxWeeklyMinutes,
+          hourlyCostCents: definition.hourlyCostCents,
+          overtimeRateBasisPoints: definition.overtimeRateBasisPoints,
         },
       });
 
@@ -232,6 +246,18 @@ async function seedDemo() {
     if (projectIds.size !== projectNames.length) {
       const missing = projectNames.filter((name) => !projectIds.has(name));
       throw new Error(`Missing demo projects: ${missing.join(", ")}`);
+    }
+
+    const projectBudgets = new Map([
+      ["Mobile Banking", 360_000],
+      ["Internal Dashboard", 260_000],
+      ["Customer Portal", 320_000],
+    ]);
+    for (const [name, id] of projectIds) {
+      await transaction.project.update({
+        where: { id },
+        data: { weeklyLaborBudgetCents: projectBudgets.get(name) ?? null },
+      });
     }
 
     await transaction.projectRequirement.deleteMany({

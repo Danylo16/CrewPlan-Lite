@@ -3,6 +3,12 @@ export interface Employee {
   name: string;
   email: string;
   role: string;
+  preferredWeeklyMinutes: number;
+  maxWeeklyMinutes: number;
+  hourlyCostCents: number;
+  overtimeRateBasisPoints: number;
+  skills: EmployeeSkill[];
+  availability: EmployeeAvailability[];
   createdAt: string;
   updatedAt: string;
 }
@@ -11,12 +17,40 @@ export interface Project {
   id: number;
   name: string;
   color: string;
+  weeklyLaborBudgetCents: number | null;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface ProjectWithCount extends Project {
   shiftCount: number;
+  requirementCount: number;
+}
+
+export interface Skill {
+  id: number;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DayOfWeek =
+  | "MONDAY" | "TUESDAY" | "WEDNESDAY" | "THURSDAY"
+  | "FRIDAY" | "SATURDAY" | "SUNDAY";
+
+export interface EmployeeSkill {
+  employeeId: number;
+  skillId: number;
+  level: number;
+  skill: Skill;
+}
+
+export interface EmployeeAvailability {
+  id: number;
+  employeeId: number;
+  dayOfWeek: DayOfWeek;
+  startMinute: number;
+  endMinute: number;
 }
 
 export interface Shift {

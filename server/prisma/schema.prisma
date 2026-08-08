@@ -15,27 +15,30 @@ datasource db {
 }
 
 model Employee {
-  id                     Int                    @id @default(autoincrement())
-  name                   String
-  email                  String                 @unique
-  role                   String
-  preferredWeeklyMinutes Int                    @default(1920)
-  maxWeeklyMinutes       Int                    @default(2400)
-  shifts                 Shift[]
-  skills                 EmployeeSkill[]
-  availability           EmployeeAvailability[]
-  createdAt              DateTime               @default(now())
-  updatedAt              DateTime               @updatedAt
+  id                      Int                    @id @default(autoincrement())
+  name                    String
+  email                   String                 @unique
+  role                    String
+  preferredWeeklyMinutes  Int                    @default(1920)
+  maxWeeklyMinutes        Int                    @default(2400)
+  hourlyCostCents         Int                    @default(3500)
+  overtimeRateBasisPoints Int                    @default(15000)
+  shifts                  Shift[]
+  skills                  EmployeeSkill[]
+  availability            EmployeeAvailability[]
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
 }
 
 model Project {
-  id           Int                  @id @default(autoincrement())
-  name         String
-  color        String               @default("#6366F1")
-  shifts       Shift[]
-  requirements ProjectRequirement[]
-  createdAt    DateTime             @default(now())
-  updatedAt    DateTime             @updatedAt
+  id                     Int                  @id @default(autoincrement())
+  name                   String
+  color                  String               @default("#6366F1")
+  weeklyLaborBudgetCents Int?
+  shifts                 Shift[]
+  requirements           ProjectRequirement[]
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
 }
 
 model Skill {
