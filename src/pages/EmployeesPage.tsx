@@ -167,7 +167,7 @@ export function EmployeesPage() {
           {isLoading && <p className="muted-text">Loading employees…</p>}
           <div className="item-list">{employees.map((employee) => <article className="employee-card detailed" key={employee.id}>
             <div className="employee-avatar">{employee.name.charAt(0).toUpperCase()}</div>
-            <div className="employee-card-body"><strong>{employee.name}</strong><p>{employee.role}</p>
+            <div className="employee-card-body"><strong>{employee.name}</strong><p>{employee.role}</p><a href={`mailto:${employee.email}`}>{employee.email}</a>
               <div className="employee-meta"><span>{employee.preferredWeeklyMinutes / 60}h preferred</span><span>{employee.maxWeeklyMinutes / 60}h max</span><span>€{(employee.hourlyCostCents / 100).toFixed(2)}/h</span></div>
               <div className="employee-skills">{employee.skills?.map((item) => <span key={item.skillId}>{item.skill.name} · L{item.level}</span>)}</div>
             </div>

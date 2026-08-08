@@ -235,29 +235,36 @@ async function seedDemo() {
     const projectNames = [...new Set(
       requirementDefinitions.map((requirement) => requirement.project),
     )];
-    const projects = await transaction.project.findMany({
-      where: { name: { in: projectNames } },
-      orderBy: { id: "asc" },
-    });
-    const projectIds = new Map(
-      projects.map((project) => [project.name, project.id]),
-    );
-
-    if (projectIds.size !== projectNames.length) {
-      const missing = projectNames.filter((name) => !projectIds.has(name));
-      throw new Error(`Missing demo projects: ${missing.join(", ")}`);
-    }
-
     const projectBudgets = new Map([
       ["Mobile Banking", 360_000],
       ["Internal Dashboard", 260_000],
       ["Customer Portal", 320_000],
     ]);
-    for (const [name, id] of projectIds) {
-      await transaction.project.update({
-        where: { id },
-        data: { weeklyLaborBudgetCents: projectBudgets.get(name) ?? null },
+    const projectIds = new Map<string, number>();
+    for (const name of projectNames) {
+      const existing = await transaction.project.findFirst({
+        where: { name },
+        orderBy: { id: "asc" },
       });
+
+      const project = existing
+        ? await transaction.project.update({
+            where: { id: existing.id },
+            data: {
+              status: "ACTIVE",
+              archivedAt: null,
+              weeklyLaborBudgetCents: projectBudgets.get(name) ?? null,
+            },
+          })
+        : await transaction.project.create({
+            data: {
+              name,
+              status: "ACTIVE",
+              weeklyLaborBudgetCents: projectBudgets.get(name) ?? null,
+            },
+          });
+
+      projectIds.set(name, project.id);
     }
 
     await transaction.projectRequirement.deleteMany({

@@ -7,6 +7,11 @@ import { shiftRouter } from "./routes/shifts.js";
 import { skillRouter } from "./routes/skills.js";
 import { projectRequirementRouter } from "./routes/projectRequirements.js";
 import { scheduleRouter } from "./routes/schedule.js";
+import {
+  projectWorkPackageRouter,
+  workPackageRouter,
+} from "./routes/workPackages.js";
+import { workLogRouter } from "./routes/workLogs.js";
 
 export const app = express();
 
@@ -20,6 +25,9 @@ app.use("/api/holidays", holidayRouter);
 app.use("/api/skills", skillRouter);
 app.use("/api/project-requirements", projectRequirementRouter);
 app.use("/api/schedule", scheduleRouter);
+app.use("/api/projects/:projectId/work-packages", projectWorkPackageRouter);
+app.use("/api/work-packages", workPackageRouter);
+app.use("/api/work-logs", workLogRouter);
 
 app.get("/api/health", (_request, response) => {
   response.json({

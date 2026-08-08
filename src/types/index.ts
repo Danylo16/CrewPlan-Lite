@@ -7,6 +7,8 @@ export interface Employee {
   maxWeeklyMinutes: number;
   hourlyCostCents: number;
   overtimeRateBasisPoints: number;
+  archivedAt: string | null;
+  archiveReason: string | null;
   skills: EmployeeSkill[];
   availability: EmployeeAvailability[];
   createdAt: string;
@@ -18,6 +20,15 @@ export interface Project {
   name: string;
   color: string;
   weeklyLaborBudgetCents: number | null;
+  totalLaborBudgetCents: number | null;
+  status: ProjectStatus;
+  startDate: string | null;
+  targetEndDate: string | null;
+  completedAt: string | null;
+  archivedAt: string | null;
+  deadlineType: DeadlineType;
+  priority: ProjectPriority;
+  optimizationStrategy: OptimizationStrategy;
   createdAt: string;
   updatedAt: string;
 }
@@ -25,6 +36,34 @@ export interface Project {
 export interface ProjectWithCount extends Project {
   shiftCount: number;
   requirementCount: number;
+  workPackageCount: number;
+  workLogCount: number;
+}
+
+export type ProjectStatus =
+  | "DRAFT" | "PLANNED" | "ACTIVE" | "ON_HOLD"
+  | "COMPLETED" | "CANCELLED" | "ARCHIVED";
+
+export type DeadlineType = "NONE" | "SOFT" | "HARD";
+export type ProjectPriority = "LOW" | "NORMAL" | "HIGH" | "CRITICAL";
+export type OptimizationStrategy =
+  | "BALANCED" | "EARLIEST_COMPLETION"
+  | "MINIMIZE_COST" | "MAXIMIZE_THROUGHPUT";
+
+export interface WorkPackage {
+  id: number;
+  projectId: number;
+  name: string;
+  description: string | null;
+  status: "TODO" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED";
+  requiredSkillId: number;
+  minimumSkillLevel: number;
+  estimatedMinutes: number;
+  remainingMinutes: number;
+  completedMinutes: number;
+  maxParallelEmployees: number;
+  earliestStartDate: string | null;
+  targetEndDate: string | null;
 }
 
 export interface Skill {

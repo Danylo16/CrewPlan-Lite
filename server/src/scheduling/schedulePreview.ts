@@ -44,6 +44,7 @@ function hash(value: unknown) {
 
 interface StoredShiftInterval extends ExistingShiftInput {
   id: number;
+  origin: "MANUAL" | "SOLVER" | "LEGACY";
 }
 
 function employeeCanFulfil(
@@ -124,9 +125,14 @@ export async function buildSchedulePreview(
 ) {
   const weekStart = parseWeekStart(weekStartValue);
   const weekWindow = getWeekWindowUtc(weekStart);
+  const weekStartDate = new Date(`${weekStartValue}T00:00:00.000Z`);
+  const weekEndDate = new Date(
+    `${weekStart.plus({ days: 7 }).toISODate()}T00:00:00.000Z`,
+  );
 
   const [employees, requirements, shifts] = await Promise.all([
     database.employee.findMany({
+      where: { archivedAt: null },
       take: MAX_EMPLOYEES + 1,
       include: {
         skills: true,
@@ -135,11 +141,22 @@ export async function buildSchedulePreview(
       orderBy: { id: "asc" },
     }),
     database.projectRequirement.findMany({
+      where: {
+        project: {
+          status: { in: ["PLANNED", "ACTIVE"] },
+          archivedAt: null,
+        },
+        AND: [
+          { OR: [{ activeFrom: null }, { activeFrom: { lt: weekEndDate } }] },
+          { OR: [{ activeUntil: null }, { activeUntil: { gte: weekStartDate } }] },
+        ],
+      },
       take: MAX_REQUIREMENTS + 1,
       orderBy: { id: "asc" },
     }),
     database.shift.findMany({
       where: {
+        status: "COMMITTED",
         startAt: { lt: weekWindow.endAt },
         endAt: { gt: weekWindow.startAt },
       },
@@ -189,15 +206,17 @@ export async function buildSchedulePreview(
     splitExistingShiftIntoDays(shift, weekStart).map((interval) => ({
       ...interval,
       id: shift.id,
+      origin: shift.origin,
     })),
   );
-  const reconciliation = replaceExisting
-    ? { existingAssignments: [], matchedByRequirement: new Map<number, number>() }
-    : reconcileExistingShifts(
-      schedulingEmployees,
-      schedulingRequirements,
-      storedShiftIntervals,
-    );
+  const preservedShiftIntervals = replaceExisting
+    ? storedShiftIntervals.filter((shift) => shift.origin !== "SOLVER")
+    : storedShiftIntervals;
+  const reconciliation = reconcileExistingShifts(
+    schedulingEmployees,
+    schedulingRequirements,
+    preservedShiftIntervals,
+  );
   const schedulingInput: SchedulingInput = {
     employees: schedulingEmployees,
     requirements: schedulingRequirements
@@ -207,7 +226,7 @@ export async function buildSchedulePreview(
           - (reconciliation.matchedByRequirement.get(requirement.id) ?? 0),
       }))
       .filter((requirement) => requirement.requiredEmployees > 0),
-    existingShifts: replaceExisting ? [] : storedShiftIntervals,
+    existingShifts: preservedShiftIntervals,
   };
 
   const inputVersion = hash({
@@ -221,6 +240,8 @@ export async function buildSchedulePreview(
       startAt: shift.startAt.toISOString(),
       endAt: shift.endAt.toISOString(),
       updatedAt: shift.updatedAt.toISOString(),
+      origin: shift.origin,
+      status: shift.status,
     })),
   });
   const result = generateSchedule(schedulingInput);

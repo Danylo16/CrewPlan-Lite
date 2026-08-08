@@ -160,6 +160,8 @@ describe("schedule generation API", () => {
           id: 30,
           employeeId: 1,
           projectId: 99,
+          origin: "SOLVER",
+          status: "COMMITTED",
 
           startAt: new Date(
             "2026-08-10T07:00:00.000Z",
@@ -256,6 +258,8 @@ describe("schedule generation API", () => {
           id: 30,
           employeeId: 1,
           projectId: 99,
+          origin: "SOLVER",
+          status: "COMMITTED",
 
           startAt: new Date(
             "2026-08-10T07:00:00.000Z",
@@ -281,6 +285,27 @@ describe("schedule generation API", () => {
     expect(response.status).toBe(200);
     expect(response.body.assignments).toHaveLength(1);
     expect(response.body.replaceExisting).toBe(true);
+  });
+
+  it("preserves manual shifts when generated allocations are replaced", async () => {
+    prismaMock.shift.findMany.mockResolvedValue([{
+      id: 40,
+      employeeId: 1,
+      projectId: 99,
+      origin: "MANUAL",
+      status: "COMMITTED",
+      startAt: new Date("2026-08-10T07:00:00.000Z"),
+      endAt: new Date("2026-08-10T11:00:00.000Z"),
+      updatedAt: new Date("2026-08-01T12:00:00.000Z"),
+    }]);
+
+    const response = await request(app)
+      .post("/api/schedule/generate")
+      .send({ weekStart: "2026-08-10", replaceExisting: true });
+
+    expect(response.status).toBe(200);
+    expect(response.body.assignments).toHaveLength(0);
+    expect(response.body.unfilledRequirements[0].rejectionCounts.OVERLAP).toBe(1);
   });
 
   it("rejects a stale preview without writing shifts", async () => {
@@ -336,6 +361,14 @@ describe("schedule generation API", () => {
       prismaMock.shift.createMany,
     ).toHaveBeenCalledOnce();
 
+    expect(prismaMock.shift.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({
+        kind: "FIXED_COVERAGE",
+        origin: "SOLVER",
+        projectRequirementId: 10,
+      })],
+    });
+
     expect(
       prismaMock.shift.deleteMany,
     ).not.toHaveBeenCalled();
@@ -348,6 +381,8 @@ describe("schedule generation API", () => {
           id: 30,
           employeeId: 1,
           projectId: 99,
+          origin: "SOLVER",
+          status: "COMMITTED",
 
           startAt: new Date(
             "2026-08-10T07:00:00.000Z",

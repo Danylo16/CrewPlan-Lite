@@ -23,7 +23,10 @@ model Employee {
   maxWeeklyMinutes        Int                    @default(2400)
   hourlyCostCents         Int                    @default(3500)
   overtimeRateBasisPoints Int                    @default(15000)
+  archivedAt              DateTime?
+  archiveReason           String?
   shifts                  Shift[]
+  workLogs                WorkLog[]
   skills                  EmployeeSkill[]
   availability            EmployeeAvailability[]
   createdAt               DateTime               @default(now())
@@ -34,11 +37,25 @@ model Project {
   id                     Int                  @id @default(autoincrement())
   name                   String
   color                  String               @default("#6366F1")
+  status                 ProjectStatus        @default(DRAFT)
+  startDate              DateTime?            @db.Date
+  targetEndDate          DateTime?            @db.Date
+  completedAt            DateTime?
+  archivedAt             DateTime?
+  deadlineType           DeadlineType         @default(NONE)
+  priority               ProjectPriority      @default(NORMAL)
+  optimizationStrategy   OptimizationStrategy @default(BALANCED)
+  totalLaborBudgetCents  Int?
   weeklyLaborBudgetCents Int?
   shifts                 Shift[]
   requirements           ProjectRequirement[]
+  workPackages           WorkPackage[]
+  workLogs               WorkLog[]
   createdAt              DateTime             @default(now())
   updatedAt              DateTime             @updatedAt
+
+  @@index([status, archivedAt])
+  @@index([startDate, targetEndDate])
 }
 
 model Skill {
@@ -46,6 +63,7 @@ model Skill {
   name         String               @unique
   employees    EmployeeSkill[]
   requirements ProjectRequirement[]
+  workPackages WorkPackage[]
   createdAt    DateTime             @default(now())
   updatedAt    DateTime             @updatedAt
 }
@@ -88,31 +106,133 @@ model ProjectRequirement {
   requiredSkillId   Int?
   minimumSkillLevel Int                 @default(1)
   priority          RequirementPriority @default(NORMAL)
+  activeFrom        DateTime?           @db.Date
+  activeUntil       DateTime?           @db.Date
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
 
   project       Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  requiredSkill Skill?  @relation(fields: [requiredSkillId], references: [id], onDelete: SetNull)
+  requiredSkill Skill?  @relation(fields: [requiredSkillId], references: [id], onDelete: Restrict)
+  shifts        Shift[]
 
   @@index([projectId, dayOfWeek])
   @@index([requiredSkillId, minimumSkillLevel])
 }
 
 model Shift {
-  id         Int      @id @default(autoincrement())
-  employeeId Int
-  projectId  Int
-  startAt    DateTime
-  endAt      DateTime
-  note       String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id                   Int              @id @default(autoincrement())
+  employeeId           Int
+  projectId            Int
+  workPackageId        Int?
+  projectRequirementId Int?
+  planningRunId        String?          @db.Uuid
+  startAt              DateTime
+  endAt                DateTime
+  note                 String?
+  kind                 AllocationKind   @default(GENERAL)
+  origin               AllocationOrigin @default(LEGACY)
+  status               AllocationStatus @default(COMMITTED)
+  plannedCostCents     Int?
+  cancelledAt          DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
 
-  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  employee           Employee            @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  project            Project             @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  workPackage        WorkPackage?        @relation(fields: [workPackageId], references: [id], onDelete: Restrict)
+  projectRequirement ProjectRequirement? @relation(fields: [projectRequirementId], references: [id], onDelete: Restrict)
+  planningRun        PlanningRun?        @relation(fields: [planningRunId], references: [id], onDelete: Restrict)
+  workLogs           WorkLog[]
 
   @@index([employeeId, startAt, endAt])
-  @@index([projectId])
+  @@index([projectId, startAt])
+  @@index([workPackageId])
+  @@index([projectRequirementId])
+  @@index([planningRunId])
+}
+
+model WorkPackage {
+  id                   Int               @id @default(autoincrement())
+  projectId            Int
+  name                 String
+  description          String?
+  status               WorkPackageStatus @default(TODO)
+  requiredSkillId      Int
+  minimumSkillLevel    Int               @default(1)
+  estimatedMinutes     Int
+  remainingMinutes     Int
+  maxParallelEmployees Int               @default(1)
+  earliestStartDate    DateTime?         @db.Date
+  targetEndDate        DateTime?         @db.Date
+  sortOrder            Int               @default(0)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  project              Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  requiredSkill        Skill                   @relation(fields: [requiredSkillId], references: [id], onDelete: Restrict)
+  incomingDependencies WorkPackageDependency[] @relation("Successor")
+  outgoingDependencies WorkPackageDependency[] @relation("Predecessor")
+  shifts               Shift[]
+  workLogs             WorkLog[]
+
+  @@index([projectId, status])
+  @@index([requiredSkillId, minimumSkillLevel])
+}
+
+model WorkPackageDependency {
+  predecessorId Int
+  successorId   Int
+  lagMinutes    Int @default(0)
+
+  predecessor WorkPackage @relation("Predecessor", fields: [predecessorId], references: [id], onDelete: Cascade)
+  successor   WorkPackage @relation("Successor", fields: [successorId], references: [id], onDelete: Cascade)
+
+  @@id([predecessorId, successorId])
+  @@index([successorId])
+}
+
+model WorkLog {
+  id                      Int           @id @default(autoincrement())
+  employeeId              Int
+  projectId               Int
+  workPackageId           Int
+  plannedAllocationId     Int?
+  startedAt               DateTime
+  endedAt                 DateTime
+  status                  WorkLogStatus @default(DRAFT)
+  note                    String?
+  actualCostCents         Int?
+  remainingMinutesApplied Int?
+  confirmedAt             DateTime?
+  voidedAt                DateTime?
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
+
+  employee          Employee    @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  project           Project     @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  workPackage       WorkPackage @relation(fields: [workPackageId], references: [id], onDelete: Restrict)
+  plannedAllocation Shift?      @relation(fields: [plannedAllocationId], references: [id], onDelete: SetNull)
+
+  @@index([employeeId, startedAt])
+  @@index([projectId, status])
+  @@index([workPackageId, status])
+}
+
+model PlanningRun {
+  id                  String              @id @default(uuid()) @db.Uuid
+  previewId           String              @unique @db.Char(64)
+  inputVersion        String              @db.Char(64)
+  horizonStart        DateTime            @db.Date
+  horizonEndExclusive DateTime            @db.Date
+  replaceMode         PlanningReplaceMode
+  status              PlanningRunStatus   @default(APPLIED)
+  configuration       Json
+  metrics             Json
+  appliedAt           DateTime            @default(now())
+  supersededAt        DateTime?
+  shifts              Shift[]
+
+  @@index([horizonStart, horizonEndExclusive])
 }
 
 enum DayOfWeek {
@@ -130,4 +250,74 @@ enum RequirementPriority {
   NORMAL
   HIGH
   CRITICAL
+}
+
+enum ProjectStatus {
+  DRAFT
+  PLANNED
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+  ARCHIVED
+}
+
+enum DeadlineType {
+  NONE
+  SOFT
+  HARD
+}
+
+enum ProjectPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum OptimizationStrategy {
+  BALANCED
+  EARLIEST_COMPLETION
+  MINIMIZE_COST
+  MAXIMIZE_THROUGHPUT
+}
+
+enum WorkPackageStatus {
+  TODO
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum AllocationKind {
+  GENERAL
+  WORK_PACKAGE
+  FIXED_COVERAGE
+}
+
+enum AllocationOrigin {
+  MANUAL
+  SOLVER
+  LEGACY
+}
+
+enum AllocationStatus {
+  COMMITTED
+  CANCELLED
+}
+
+enum WorkLogStatus {
+  DRAFT
+  CONFIRMED
+  VOID
+}
+
+enum PlanningRunStatus {
+  APPLIED
+  SUPERSEDED
+}
+
+enum PlanningReplaceMode {
+  KEEP_EXISTING
+  REPLACE_GENERATED
 }

@@ -167,6 +167,8 @@ scheduleRouter.post(
                 await transaction.shift
                   .deleteMany({
                     where: {
+                      origin: "SOLVER",
+                      status: "COMMITTED",
                       startAt: {
                         lt: weekWindow.endAt,
                       },
@@ -197,6 +199,16 @@ scheduleRouter.post(
                             projectId:
                               assignment
                                 .projectId,
+
+                            projectRequirementId:
+                              assignment
+                                .requirementId,
+
+                            kind:
+                              "FIXED_COVERAGE",
+
+                            origin:
+                              "SOLVER",
 
                             startAt:
                               new Date(
