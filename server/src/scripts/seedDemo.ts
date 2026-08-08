@@ -129,7 +129,7 @@ const requirementDefinitions = [
     project: "Internal Dashboard",
     dayOfWeek: DayOfWeek.WEDNESDAY,
     startMinute: 600,
-    endMinute: 1080,
+    endMinute: 1020,
     requiredEmployees: 2,
     skill: "TypeScript",
     minimumSkillLevel: 3,
