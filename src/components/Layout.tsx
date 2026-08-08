@@ -6,7 +6,7 @@ export function Layout() {
       <aside className="sidebar">
         <div>
           <h1>CrewPlan</h1>
-          <p>Workforce scheduling</p>
+          <p>Portfolio capacity planning</p>
         </div>
 
         <nav>

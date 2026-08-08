@@ -36,10 +36,34 @@ function minuteOfDay(value: string) {
   return Number(hours) * 60 + Number(minutes);
 }
 
+function timeOfDay(value: number) {
+  return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+}
+
+function employeeForm(employee: Employee): EmployeeForm {
+  const form = initialForm();
+  form.name = employee.name;
+  form.email = employee.email;
+  form.role = employee.role;
+  form.preferredHours = String(employee.preferredWeeklyMinutes / 60);
+  form.maxHours = String(employee.maxWeeklyMinutes / 60);
+  form.hourlyCost = String(employee.hourlyCostCents / 100);
+  form.overtimeMultiplier = String(employee.overtimeRateBasisPoints / 10_000);
+  form.skillLevels = Object.fromEntries(employee.skills.map((item) => [item.skillId, item.level]));
+  form.availability = Object.fromEntries(WEEKDAYS.map(({ id }) => {
+    const slot = employee.availability.find((item) => item.dayOfWeek === id);
+    return [id, slot
+      ? { enabled: true, start: timeOfDay(slot.startMinute), end: timeOfDay(slot.endMinute) }
+      : { enabled: false, start: "09:00", end: "17:00" }];
+  })) as EmployeeForm["availability"];
+  return form;
+}
+
 export function EmployeesPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [form, setForm] = useState<EmployeeForm>(initialForm);
+  const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,16 +93,16 @@ export function EmployeesPage() {
 
     setIsSubmitting(true);
     try {
-      const employee = await apiRequest<Employee>("/employees", {
-        method: "POST",
-        body: JSON.stringify({
+      const basicData = {
           name: form.name,
           email: form.email,
           role: form.role,
-          preferredWeeklyMinutes: Math.round(Number(form.preferredHours) * 60),
-          maxWeeklyMinutes: Math.round(Number(form.maxHours) * 60),
           hourlyCostCents: Math.round(Number(form.hourlyCost) * 100),
           overtimeRateBasisPoints: Math.round(Number(form.overtimeMultiplier) * 10_000),
+      };
+      const profileData = {
+          preferredWeeklyMinutes: Math.round(Number(form.preferredHours) * 60),
+          maxWeeklyMinutes: Math.round(Number(form.maxHours) * 60),
           skills: selectedSkills.map(([skillId, level]) => ({
             skillId: Number(skillId), level,
           })),
@@ -87,14 +111,59 @@ export function EmployeesPage() {
             startMinute: minuteOfDay(form.availability[id].start),
             endMinute: minuteOfDay(form.availability[id].end),
           })),
-        }),
-      });
-      setEmployees((current) => [employee, ...current]);
+      };
+
+      let employee: Employee;
+      if (editingEmployee) {
+        await apiRequest<Employee>(`/employees/${editingEmployee.id}`, {
+          method: "PATCH",
+          body: JSON.stringify(basicData),
+        });
+        employee = await apiRequest<Employee>(`/employees/${editingEmployee.id}/scheduling-profile`, {
+          method: "PUT",
+          body: JSON.stringify(profileData),
+        });
+        setEmployees((current) => current.map((item) => item.id === employee.id ? employee : item));
+      } else {
+        employee = await apiRequest<Employee>("/employees", {
+          method: "POST",
+          body: JSON.stringify({ ...basicData, ...profileData }),
+        });
+        setEmployees((current) => [employee, ...current]);
+      }
       setForm(initialForm());
+      setEditingEmployee(null);
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "Failed to create employee");
+      setError(submitError instanceof Error ? submitError.message : "Failed to save employee");
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function archiveEmployee(employee: Employee) {
+    if (!window.confirm(`Archive ${employee.name} and cancel future allocations?`)) return;
+    try {
+      await apiRequest(`/employees/${employee.id}/archive`, {
+        method: "POST",
+        body: JSON.stringify({ cancelFutureAllocations: true, reason: "Archived from team management" }),
+      });
+      setEmployees((current) => current.filter((item) => item.id !== employee.id));
+      if (editingEmployee?.id === employee.id) {
+        setEditingEmployee(null);
+        setForm(initialForm());
+      }
+    } catch (archiveError) {
+      setError(archiveError instanceof Error ? archiveError.message : "Failed to archive employee");
+    }
+  }
+
+  async function deleteEmployee(employee: Employee) {
+    if (!window.confirm(`Permanently delete ${employee.name}? This only works without history.`)) return;
+    try {
+      await apiRequest<void>(`/employees/${employee.id}`, { method: "DELETE" });
+      setEmployees((current) => current.filter((item) => item.id !== employee.id));
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Failed to delete employee");
     }
   }
 
@@ -107,7 +176,7 @@ export function EmployeesPage() {
 
       <div className="employee-layout">
         <form className="panel form-panel employee-form" onSubmit={handleSubmit}>
-          <h3>New employee profile</h3>
+          <div className="form-title-row"><h3>{editingEmployee ? `Edit ${editingEmployee.name}` : "New employee profile"}</h3>{editingEmployee && <button className="secondary-button" type="button" onClick={() => { setEditingEmployee(null); setForm(initialForm()); }}>Cancel edit</button>}</div>
           <div className="form-row three-columns">
             <label>Name<input required minLength={2} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
             <label>Email<input required type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></label>
@@ -159,7 +228,7 @@ export function EmployeesPage() {
           </div>
 
           {error && <div className="error-message">{error}</div>}
-          <button className="primary-button" disabled={isSubmitting}>{isSubmitting ? "Creating profile…" : "Create employee"}</button>
+          <button className="primary-button" disabled={isSubmitting}>{isSubmitting ? "Saving profile…" : editingEmployee ? "Save employee" : "Create employee"}</button>
         </form>
 
         <div className="panel team-panel">
@@ -170,6 +239,7 @@ export function EmployeesPage() {
             <div className="employee-card-body"><strong>{employee.name}</strong><p>{employee.role}</p><a href={`mailto:${employee.email}`}>{employee.email}</a>
               <div className="employee-meta"><span>{employee.preferredWeeklyMinutes / 60}h preferred</span><span>{employee.maxWeeklyMinutes / 60}h max</span><span>€{(employee.hourlyCostCents / 100).toFixed(2)}/h</span></div>
               <div className="employee-skills">{employee.skills?.map((item) => <span key={item.skillId}>{item.skill.name} · L{item.level}</span>)}</div>
+              <div className="card-actions"><button className="secondary-button" type="button" onClick={() => { setEditingEmployee(employee); setForm(employeeForm(employee)); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Edit</button><button className="secondary-button" type="button" onClick={() => void archiveEmployee(employee)}>Archive</button><button className="danger-button" type="button" onClick={() => void deleteEmployee(employee)}>Delete</button></div>
             </div>
           </article>)}</div>
         </div>

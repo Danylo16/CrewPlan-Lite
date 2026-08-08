@@ -64,6 +64,61 @@ export interface WorkPackage {
   maxParallelEmployees: number;
   earliestStartDate: string | null;
   targetEndDate: string | null;
+  sortOrder: number;
+  requiredSkill: Skill;
+  incomingDependencies: WorkPackageDependency[];
+}
+
+export interface WorkPackageDependency {
+  predecessorId: number;
+  successorId: number;
+  lagMinutes: number;
+}
+
+export interface ProjectProgress {
+  estimatedMinutes: number;
+  completedMinutes: number;
+  remainingMinutes: number;
+  forecastMinutes: number;
+  completionPercent: number;
+  actualCostCents: number;
+  remainingBudgetCents: number | null;
+}
+
+export interface ProjectDetails extends ProjectWithCount {
+  workPackages: WorkPackage[];
+  progress: ProjectProgress;
+}
+
+export interface FixedCoverageRequirement {
+  id: number;
+  projectId: number;
+  dayOfWeek: DayOfWeek;
+  startMinute: number;
+  endMinute: number;
+  requiredEmployees: number;
+  requiredSkillId: number | null;
+  minimumSkillLevel: number;
+  priority: RequirementPriority;
+  requiredSkill: Skill | null;
+}
+
+export interface WorkLog {
+  id: number;
+  employeeId: number;
+  projectId: number;
+  workPackageId: number;
+  plannedAllocationId: number | null;
+  startedAt: string;
+  endedAt: string;
+  status: "DRAFT" | "CONFIRMED" | "VOID";
+  note: string | null;
+  actualCostCents: number | null;
+  remainingMinutesApplied: number | null;
+  minutes: number;
+  employee: Employee;
+  project: Project;
+  workPackage: WorkPackage;
 }
 
 export interface Skill {

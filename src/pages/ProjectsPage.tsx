@@ -1,425 +1,214 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { apiRequest } from "../api/client";
-import type { DayOfWeek, ProjectWithCount, RequirementPriority, Skill } from "../types";
-
-interface RequirementForm {
-  dayOfWeek: DayOfWeek;
-  start: string;
-  end: string;
-  requiredEmployees: number;
-  requiredSkillId: string;
-  minimumSkillLevel: number;
-  priority: RequirementPriority;
-}
+import type {
+  DeadlineType,
+  OptimizationStrategy,
+  ProjectPriority,
+  ProjectWithCount,
+} from "../types";
 
 interface ProjectForm {
   name: string;
   color: string;
+  startDate: string;
+  targetEndDate: string;
+  deadlineType: DeadlineType;
+  priority: ProjectPriority;
+  optimizationStrategy: OptimizationStrategy;
+  totalBudget: string;
   weeklyBudget: string;
-  requirements: RequirementForm[];
 }
 
-const initialRequirement = (): RequirementForm => ({
-  dayOfWeek: "MONDAY", start: "09:00", end: "17:00",
-  requiredEmployees: 1, requiredSkillId: "", minimumSkillLevel: 1,
-  priority: "NORMAL",
-});
-
-const initialForm: ProjectForm = {
+const emptyForm: ProjectForm = {
   name: "",
   color: "#5267DF",
-  weeklyBudget: "5000",
-  requirements: [initialRequirement()],
+  startDate: "",
+  targetEndDate: "",
+  deadlineType: "NONE",
+  priority: "NORMAL",
+  optimizationStrategy: "BALANCED",
+  totalBudget: "",
+  weeklyBudget: "",
 };
+
+function cents(value: string) {
+  return value === "" ? null : Math.round(Number(value) * 100);
+}
+
+function projectForm(project: ProjectWithCount): ProjectForm {
+  return {
+    name: project.name,
+    color: project.color,
+    startDate: project.startDate?.slice(0, 10) ?? "",
+    targetEndDate: project.targetEndDate?.slice(0, 10) ?? "",
+    deadlineType: project.deadlineType,
+    priority: project.priority,
+    optimizationStrategy: project.optimizationStrategy,
+    totalBudget: project.totalLaborBudgetCents === null
+      ? ""
+      : String(project.totalLaborBudgetCents / 100),
+    weeklyBudget: project.weeklyLaborBudgetCents === null
+      ? ""
+      : String(project.weeklyLaborBudgetCents / 100),
+  };
+}
 
 export function ProjectsPage() {
   const [projects, setProjects] = useState<ProjectWithCount[]>([]);
-  const [skills, setSkills] = useState<Skill[]>([]);
-  const [form, setForm] = useState<ProjectForm>(initialForm);
-  const [editingProject, setEditingProject] =
-    useState<ProjectWithCount | null>(null);
+  const [form, setForm] = useState<ProjectForm>(emptyForm);
+  const [editingProject, setEditingProject] = useState<ProjectWithCount | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const totalAssignments = projects.reduce(
-    (total, project) => total + project.shiftCount,
-    0,
-  );
+  async function loadProjects() {
+    try {
+      setProjects(await apiRequest<ProjectWithCount[]>("/projects"));
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Failed to load projects");
+    } finally {
+      setIsLoading(false);
+    }
+  }
 
   useEffect(() => {
-    async function loadProjects() {
-      try {
-        const [data, skillData] = await Promise.all([
-          apiRequest<ProjectWithCount[]>("/projects"),
-          apiRequest<Skill[]>("/skills"),
-        ]);
-        setProjects(data);
-        setSkills(skillData);
-      } catch (loadError) {
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : "Failed to load projects",
-        );
-      } finally {
-        setIsLoading(false);
-      }
-    }
-
-    void loadProjects();
+    const timer = window.setTimeout(() => { void loadProjects(); }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
-  function openCreateModal() {
+  function openCreate() {
     setEditingProject(null);
-    setForm({ ...initialForm, requirements: [initialRequirement()] });
+    setForm(emptyForm);
     setError(null);
     setIsModalOpen(true);
   }
 
-  function openEditModal(project: ProjectWithCount) {
+  function openEdit(project: ProjectWithCount) {
     setEditingProject(project);
-    setForm({
-      name: project.name,
-      color: project.color,
-      weeklyBudget: project.weeklyLaborBudgetCents === null
-        ? ""
-        : String(project.weeklyLaborBudgetCents / 100),
-      requirements: [],
-    });
+    setForm(projectForm(project));
     setError(null);
     setIsModalOpen(true);
   }
 
-  function closeModal() {
-     
-
-    setIsModalOpen(false);
-    setEditingProject(null);
-    setForm({ ...initialForm, requirements: [initialRequirement()] });
-    setError(null);
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function submitProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setError(null);
     setIsSubmitting(true);
-
+    setError(null);
     try {
       const project = await apiRequest<ProjectWithCount>(
-        editingProject
-          ? `/projects/${editingProject.id}`
-          : "/projects",
+        editingProject ? `/projects/${editingProject.id}` : "/projects",
         {
           method: editingProject ? "PATCH" : "POST",
-          body: JSON.stringify(editingProject ? {
+          body: JSON.stringify({
             name: form.name,
             color: form.color,
-            weeklyLaborBudgetCents: form.weeklyBudget === ""
+            startDate: form.startDate || null,
+            targetEndDate: form.deadlineType === "NONE"
               ? null
-              : Math.round(Number(form.weeklyBudget) * 100),
-          } : {
-            name: form.name,
-            color: form.color,
-            weeklyLaborBudgetCents: form.weeklyBudget === ""
-              ? null
-              : Math.round(Number(form.weeklyBudget) * 100),
-            requirements: form.requirements.map((requirement) => {
-              const [startHour, startMinute] = requirement.start.split(":").map(Number);
-              const [endHour, endMinute] = requirement.end.split(":").map(Number);
-              return {
-                dayOfWeek: requirement.dayOfWeek,
-                startMinute: startHour * 60 + startMinute,
-                endMinute: endHour * 60 + endMinute,
-                requiredEmployees: requirement.requiredEmployees,
-                requiredSkillId: requirement.requiredSkillId
-                  ? Number(requirement.requiredSkillId)
-                  : null,
-                minimumSkillLevel: requirement.requiredSkillId
-                  ? requirement.minimumSkillLevel
-                  : 1,
-                priority: requirement.priority,
-              };
-            }),
+              : form.targetEndDate || null,
+            deadlineType: form.deadlineType,
+            priority: form.priority,
+            optimizationStrategy: form.optimizationStrategy,
+            totalLaborBudgetCents: cents(form.totalBudget),
+            weeklyLaborBudgetCents: cents(form.weeklyBudget),
           }),
         },
       );
-
-      setProjects((currentProjects) =>
-        editingProject
-          ? currentProjects.map((currentProject) =>
-              currentProject.id === project.id
-                ? project
-                : currentProject,
-            )
-          : [project, ...currentProjects],
-      );
-
-      closeModal();
+      setProjects((current) => editingProject
+        ? current.map((item) => item.id === project.id ? project : item)
+        : [project, ...current]);
+      setIsModalOpen(false);
     } catch (submitError) {
-      setError(
-        submitError instanceof Error
-          ? submitError.message
-          : "Failed to save project",
-      );
+      setError(submitError instanceof Error ? submitError.message : "Failed to save project");
     } finally {
       setIsSubmitting(false);
     }
   }
 
-  return (
-    <section>
-      <div className="page-header projects-header">
-        <div>
-          <h2>Projects</h2>
-          <p>Manage workstreams and their calendar identity.</p>
-        </div>
+  async function deleteProject(project: ProjectWithCount) {
+    if (!window.confirm(`Delete draft project “${project.name}”?`)) return;
+    try {
+      await apiRequest<void>(`/projects/${project.id}`, { method: "DELETE" });
+      setProjects((current) => current.filter((item) => item.id !== project.id));
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Failed to delete project");
+    }
+  }
 
-        <button
-          className="primary-button header-button"
-          type="button"
-          onClick={openCreateModal}
-        >
-          + New project
-        </button>
-      </div>
-
-      <div className="project-stats">
-        <div className="stat-card">
-          <span>Active projects</span>
-          <strong>{projects.length}</strong>
-        </div>
-
-        <div className="stat-card">
-          <span>Scheduled shifts</span>
-          <strong>{totalAssignments}</strong>
-        </div>
-      </div>
-
-      {error && !isModalOpen && (
-        <div className="error-message">{error}</div>
-      )}
-
-      {isLoading ? (
-        <p className="muted-text">Loading projects…</p>
-      ) : projects.length === 0 ? (
-        <div className="panel projects-empty">
-          <strong>No projects yet</strong>
-          <p>Create your first project to begin scheduling work.</p>
-
-          <button
-            className="primary-button"
-            type="button"
-            onClick={openCreateModal}
-          >
-            Create project
-          </button>
-        </div>
-      ) : (
-        <div className="projects-grid">
-          {projects.map((project) => (
-            <article className="project-tile" key={project.id}>
-              <div
-                className="project-tile-accent"
-                style={{ backgroundColor: project.color }}
-              />
-
-              <div className="project-tile-header">
-                <div
-                  className="project-icon"
-                  style={{
-                    color: project.color,
-                    backgroundColor: `${project.color}18`,
-                  }}
-                >
-                  {project.name.charAt(0).toUpperCase()}
-                </div>
-
-                <button
-                  className="secondary-button"
-                  type="button"
-                  onClick={() => openEditModal(project)}
-                >
-                  Edit
-                </button>
-              </div>
-
-              <div className="project-tile-content">
-                <h3>{project.name}</h3>
-                <p>
-                  {project.shiftCount}{" "}
-                  {project.shiftCount === 1
-                    ? "scheduled shift"
-                    : "scheduled shifts"}
-                </p>
-                <p>{project.requirementCount} staffing requirements</p>
-                <p>{project.weeklyLaborBudgetCents === null
-                  ? "No weekly budget"
-                  : `€${(project.weeklyLaborBudgetCents / 100).toLocaleString("en-GB")} weekly budget`}</p>
-              </div>
-
-              <div className="project-tile-footer">
-                <span
-                  className="color-dot"
-                  style={{ backgroundColor: project.color }}
-                />
-                <span>Calendar color</span>
-              </div>
-            </article>
-          ))}
-        </div>
-      )}
-
-      {isModalOpen && (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={closeModal}
-        >
-          <div
-            className="project-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="project-modal-title"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="modal-header">
-              <div>
-                <h3 id="project-modal-title">
-                  {editingProject ? "Edit project" : "New project"}
-                </h3>
-                <p>
-                  {editingProject
-                    ? "Update the project name or calendar color."
-                    : "Create a workstream for employee assignments."}
-                </p>
-              </div>
-
-              <button
-                className="modal-close"
-                type="button"
-                aria-label="Close"
-                onClick={closeModal}
-              >
-                ×
-              </button>
-            </div>
-
-            <form className="modal-form" onSubmit={handleSubmit}>
-              <label>
-                Project name
-                <input
-                  type="text"
-                  value={form.name}
-                  placeholder="Customer Portal"
-                  required
-                  minLength={2}
-                  maxLength={100}
-                  autoFocus
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      name: event.target.value,
-                    })
-                  }
-                />
-              </label>
-
-              <label>
-                Calendar color
-                <div className="modal-color-field">
-                  <input
-                    type="color"
-                    value={form.color}
-                    aria-label="Project color"
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        color: event.target.value.toUpperCase(),
-                      })
-                    }
-                  />
-
-                  <input
-                    type="text"
-                    value={form.color}
-                    pattern="^#[0-9A-Fa-f]{6}$"
-                    required
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        color: event.target.value,
-                      })
-                    }
-                  />
-                </div>
-              </label>
-
-              <label>
-                Weekly labor budget (€)
-                <input type="number" min="0" step="0.01" value={form.weeklyBudget} onChange={(event) => setForm({ ...form, weeklyBudget: event.target.value })} />
-              </label>
-
-              {!editingProject && <div className="requirements-editor">
-                <div className="requirements-heading">
-                  <div><strong>Staffing requirements</strong><p>Define the demand this project adds to the scheduler.</p></div>
-                  <button className="secondary-button" type="button" onClick={() => setForm({ ...form, requirements: [...form.requirements, initialRequirement()] })}>+ Add requirement</button>
-                </div>
-
-                {form.requirements.map((requirement, index) => <div className="requirement-row" key={index}>
-                  <select aria-label="Day" value={requirement.dayOfWeek} onChange={(event) => {
-                    const requirements = [...form.requirements]; requirements[index] = { ...requirement, dayOfWeek: event.target.value as DayOfWeek }; setForm({ ...form, requirements });
-                  }}>{["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"].map((day) => <option key={day} value={day}>{day.slice(0, 3)}</option>)}</select>
-                  <input aria-label="Start" type="time" value={requirement.start} onChange={(event) => { const requirements = [...form.requirements]; requirements[index] = { ...requirement, start: event.target.value }; setForm({ ...form, requirements }); }} />
-                  <input aria-label="End" type="time" value={requirement.end} onChange={(event) => { const requirements = [...form.requirements]; requirements[index] = { ...requirement, end: event.target.value }; setForm({ ...form, requirements }); }} />
-                  <input aria-label="People" title="Required employees" type="number" min="1" max="100" value={requirement.requiredEmployees} onChange={(event) => { const requirements = [...form.requirements]; requirements[index] = { ...requirement, requiredEmployees: Number(event.target.value) }; setForm({ ...form, requirements }); }} />
-                  <select aria-label="Required skill" value={requirement.requiredSkillId} onChange={(event) => { const requirements = [...form.requirements]; requirements[index] = { ...requirement, requiredSkillId: event.target.value }; setForm({ ...form, requirements }); }}><option value="">Any skill</option>{skills.map((skill) => <option key={skill.id} value={skill.id}>{skill.name}</option>)}</select>
-                  <select aria-label="Minimum skill level" disabled={!requirement.requiredSkillId} value={requirement.minimumSkillLevel} onChange={(event) => { const requirements = [...form.requirements]; requirements[index] = { ...requirement, minimumSkillLevel: Number(event.target.value) }; setForm({ ...form, requirements }); }}>{[1, 2, 3, 4, 5].map((level) => <option key={level} value={level}>L{level}+</option>)}</select>
-                  <select aria-label="Priority" value={requirement.priority} onChange={(event) => { const requirements = [...form.requirements]; requirements[index] = { ...requirement, priority: event.target.value as RequirementPriority }; setForm({ ...form, requirements }); }}>{["LOW", "NORMAL", "HIGH", "CRITICAL"].map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select>
-                  <button className="remove-requirement" type="button" disabled={form.requirements.length === 1} onClick={() => setForm({ ...form, requirements: form.requirements.filter((_, itemIndex) => itemIndex !== index) })}>×</button>
-                </div>)}
-              </div>}
-
-              <div
-                className="color-preview"
-                style={{
-                  borderLeftColor: form.color,
-                  backgroundColor: `${form.color}10`,
-                }}
-              >
-                <strong>{form.name || "Project preview"}</strong>
-                <span>This color will identify shifts in the calendar.</span>
-              </div>
-
-              {error && (
-                <div className="error-message">{error}</div>
-              )}
-
-              <div className="modal-actions">
-                <button
-                  className="secondary-button modal-action"
-                  type="button"
-                  onClick={closeModal}
-                >
-                  Cancel
-                </button>
-
-                <button
-                  className="primary-button modal-action"
-                  disabled={isSubmitting}
-                >
-                  {isSubmitting
-                    ? "Saving…"
-                    : editingProject
-                      ? "Save changes"
-                      : "Create project"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-    </section>
+  const activeProjects = projects.filter((project) => project.status === "ACTIVE").length;
+  const totalRemainingMinutes = projects.reduce(
+    (total, project) => total + project.workPackageCount,
+    0,
   );
+
+  return <section>
+    <div className="page-header projects-header">
+      <div>
+        <h2>Project portfolio</h2>
+        <p>Control scope, deadlines, budgets and delivery capacity.</p>
+      </div>
+      <button className="primary-button" type="button" onClick={openCreate}>+ New project</button>
+    </div>
+
+    <div className="project-stats">
+      <div className="stat-card"><span>Active</span><strong>{activeProjects}</strong></div>
+      <div className="stat-card"><span>Total projects</span><strong>{projects.length}</strong></div>
+      <div className="stat-card"><span>Work packages</span><strong>{totalRemainingMinutes}</strong></div>
+    </div>
+    {error && !isModalOpen && <div className="error-message">{error}</div>}
+    {isLoading ? <p className="muted-text">Loading portfolio…</p> :
+      <div className="projects-grid">
+        {projects.map((project) => <article className="project-tile portfolio-card" key={project.id}>
+          <div className="project-tile-accent" style={{ backgroundColor: project.color }} />
+          <div className="project-tile-header">
+            <span className={`status-badge ${project.status.toLowerCase()}`}>{project.status}</span>
+            <span className={`priority-badge ${project.priority.toLowerCase()}`}>{project.priority}</span>
+          </div>
+          <div className="project-tile-content">
+            <h3>{project.name}</h3>
+            <p>{project.workPackageCount} work packages · {project.shiftCount} allocations</p>
+            <p>{project.startDate ? `Starts ${new Date(project.startDate).toLocaleDateString()}` : "Start date not set"}</p>
+            <p>{project.targetEndDate ? `${project.deadlineType} deadline ${new Date(project.targetEndDate).toLocaleDateString()}` : "No deadline"}</p>
+            <p>{project.totalLaborBudgetCents === null ? "No total budget" : `€${(project.totalLaborBudgetCents / 100).toLocaleString()} total budget`}</p>
+          </div>
+          <div className="card-actions">
+            <Link className="primary-button button-link" to={`/projects/${project.id}`}>Open</Link>
+            <button className="secondary-button" type="button" onClick={() => openEdit(project)}>Edit</button>
+            {project.status === "DRAFT" && <button className="danger-button" type="button" onClick={() => void deleteProject(project)}>Delete</button>}
+          </div>
+        </article>)}
+      </div>}
+
+    {isModalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={() => setIsModalOpen(false)}>
+      <div className="project-modal portfolio-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div><h3>{editingProject ? "Edit project" : "Create project"}</h3><p>Business constraints used by portfolio planning.</p></div>
+          <button className="modal-close" type="button" onClick={() => setIsModalOpen(false)}>×</button>
+        </div>
+        <form className="modal-form" onSubmit={submitProject}>
+          <div className="form-row two-columns">
+            <label>Project name<input required minLength={2} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
+            <label>Color<input type="color" value={form.color} onChange={(event) => setForm({ ...form, color: event.target.value.toUpperCase() })} /></label>
+          </div>
+          <div className="form-row three-columns">
+            <label>Start date<input type="date" value={form.startDate} onChange={(event) => setForm({ ...form, startDate: event.target.value })} /></label>
+            <label>Deadline type<select value={form.deadlineType} onChange={(event) => setForm({ ...form, deadlineType: event.target.value as DeadlineType, targetEndDate: event.target.value === "NONE" ? "" : form.targetEndDate })}><option>NONE</option><option>SOFT</option><option>HARD</option></select></label>
+            <label>Target end<input type="date" disabled={form.deadlineType === "NONE"} required={form.deadlineType !== "NONE"} value={form.targetEndDate} onChange={(event) => setForm({ ...form, targetEndDate: event.target.value })} /></label>
+          </div>
+          <div className="form-row two-columns">
+            <label>Priority<select value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value as ProjectPriority })}>{["LOW", "NORMAL", "HIGH", "CRITICAL"].map((value) => <option key={value}>{value}</option>)}</select></label>
+            <label>Optimization<select value={form.optimizationStrategy} onChange={(event) => setForm({ ...form, optimizationStrategy: event.target.value as OptimizationStrategy })}><option value="BALANCED">Balanced</option><option value="EARLIEST_COMPLETION">Earliest completion</option><option value="MINIMIZE_COST">Minimize cost</option><option value="MAXIMIZE_THROUGHPUT">Maximize throughput</option></select></label>
+          </div>
+          <div className="form-row two-columns">
+            <label>Total labor budget (€)<input type="number" min="0" step="0.01" value={form.totalBudget} onChange={(event) => setForm({ ...form, totalBudget: event.target.value })} /></label>
+            <label>Weekly burn cap (€)<input type="number" min="0" step="0.01" value={form.weeklyBudget} onChange={(event) => setForm({ ...form, weeklyBudget: event.target.value })} /></label>
+          </div>
+          {error && <div className="error-message">{error}</div>}
+          <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setIsModalOpen(false)}>Cancel</button><button className="primary-button" disabled={isSubmitting}>{isSubmitting ? "Saving…" : "Save project"}</button></div>
+        </form>
+      </div>
+    </div>}
+  </section>;
 }

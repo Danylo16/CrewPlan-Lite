@@ -2,6 +2,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { EmployeesPage } from "./pages/EmployeesPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
+import { ProjectDetailsPage } from "./pages/ProjectDetailsPage";
 import { SchedulePage } from "./pages/SchedulePage";
 
 export default function App() {
@@ -12,6 +13,7 @@ export default function App() {
           <Route path="/" element={<SchedulePage />} />
           <Route path="/employees" element={<EmployeesPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/projects/:id" element={<ProjectDetailsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

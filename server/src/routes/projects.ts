@@ -146,6 +146,99 @@ projectRouter.get("/", async (request, response) => {
   return response.json(result);
 });
 
+projectRouter.get("/:id", async (request, response) => {
+  const idResult = projectIdSchema.safeParse(request.params.id);
+  if (!idResult.success) {
+    return response.status(400).json({
+      code: "VALIDATION_ERROR",
+      message: "Invalid project id",
+    });
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: idResult.data },
+    include: {
+      _count: {
+        select: {
+          shifts: true,
+          requirements: true,
+          workPackages: true,
+          workLogs: true,
+        },
+      },
+      workPackages: {
+        include: {
+          requiredSkill: true,
+          incomingDependencies: true,
+          workLogs: {
+            where: { status: "CONFIRMED" },
+            select: { startedAt: true, endedAt: true },
+          },
+        },
+        orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+      },
+      workLogs: {
+        where: { status: "CONFIRMED" },
+        select: { actualCostCents: true },
+      },
+    },
+  });
+
+  if (!project) {
+    return response.status(404).json({
+      code: "PROJECT_NOT_FOUND",
+      message: "Project does not exist",
+    });
+  }
+
+  const workPackages = project.workPackages.map(({ workLogs, ...workPackage }) => ({
+    ...workPackage,
+    completedMinutes: workLogs.reduce(
+      (total, log) => total
+        + Math.round((log.endedAt.getTime() - log.startedAt.getTime()) / 60_000),
+      0,
+    ),
+  }));
+  const completedMinutes = workPackages.reduce(
+    (total, workPackage) => total + workPackage.completedMinutes,
+    0,
+  );
+  const remainingMinutes = workPackages.reduce(
+    (total, workPackage) => total + workPackage.remainingMinutes,
+    0,
+  );
+  const estimatedMinutes = workPackages.reduce(
+    (total, workPackage) => total + workPackage.estimatedMinutes,
+    0,
+  );
+  const { _count, workLogs: projectWorkLogs, ...projectData } = project;
+  const actualCostCents = projectWorkLogs.reduce(
+    (total, workLog) => total + (workLog.actualCostCents ?? 0),
+    0,
+  );
+  return response.json({
+    ...projectData,
+    workPackages,
+    shiftCount: _count.shifts,
+    requirementCount: _count.requirements,
+    workPackageCount: _count.workPackages,
+    workLogCount: _count.workLogs,
+    progress: {
+      estimatedMinutes,
+      completedMinutes,
+      remainingMinutes,
+      forecastMinutes: completedMinutes + remainingMinutes,
+      completionPercent: completedMinutes + remainingMinutes === 0
+        ? 0
+        : Math.round((completedMinutes / (completedMinutes + remainingMinutes)) * 10_000) / 100,
+      actualCostCents,
+      remainingBudgetCents: project.totalLaborBudgetCents === null
+        ? null
+        : project.totalLaborBudgetCents - actualCostCents,
+    },
+  });
+});
+
 projectRouter.post("/", async (request, response) => {
   const validationResult = createProjectSchema.safeParse(request.body);
 
