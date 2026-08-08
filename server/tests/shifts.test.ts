@@ -13,6 +13,18 @@ const prismaMock = vi.hoisted(() => ({
     findUnique: vi.fn(),
     create: vi.fn(),
   },
+  skill: {
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    delete: vi.fn(),
+  },
+  projectRequirement: {
+    findMany: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+  },
   shift: {
     findMany: vi.fn(),
     findFirst: vi.fn(),
@@ -64,6 +76,155 @@ describe("CrewPlan API", () => {
 
     expect(response.status).toBe(400);
     expect(response.body.code).toBe("INVALID_TIME_RANGE");
+  });
+
+  it("rejects an employee profile with overlapping availability", async () => {
+    const response = await request(app)
+      .put("/api/employees/1/scheduling-profile")
+      .send({
+        preferredWeeklyMinutes: 1800,
+        maxWeeklyMinutes: 2400,
+        skills: [],
+        availability: [
+          {
+            dayOfWeek: "MONDAY",
+            startMinute: 540,
+            endMinute: 780,
+          },
+          {
+            dayOfWeek: "MONDAY",
+            startMinute: 720,
+            endMinute: 1020,
+          },
+        ],
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("creates a scheduler-ready employee profile atomically", async () => {
+    prismaMock.skill.findMany.mockResolvedValue([{ id: 2 }]);
+    prismaMock.employee.create.mockResolvedValue({
+      id: 9,
+      name: "Mia Berger",
+      email: "mia@crewplan.at",
+      role: "Backend Developer",
+      preferredWeeklyMinutes: 1920,
+      maxWeeklyMinutes: 2400,
+      hourlyCostCents: 4200,
+      overtimeRateBasisPoints: 15000,
+      skills: [{ skillId: 2, level: 4 }],
+      availability: [{ dayOfWeek: "MONDAY", startMinute: 540, endMinute: 1020 }],
+    });
+
+    const response = await request(app).post("/api/employees").send({
+      name: "Mia Berger",
+      email: "mia@crewplan.at",
+      role: "Backend Developer",
+      preferredWeeklyMinutes: 1920,
+      maxWeeklyMinutes: 2400,
+      hourlyCostCents: 4200,
+      overtimeRateBasisPoints: 15000,
+      skills: [{ skillId: 2, level: 4 }],
+      availability: [{ dayOfWeek: "MONDAY", startMinute: 540, endMinute: 1020 }],
+    });
+
+    expect(response.status).toBe(201);
+    expect(prismaMock.employee.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        hourlyCostCents: 4200,
+        skills: { create: [expect.objectContaining({ level: 4 })] },
+      }),
+    }));
+  });
+
+  it("creates a project together with its budget and requirements", async () => {
+    prismaMock.skill.findMany.mockResolvedValue([{ id: 2 }]);
+    prismaMock.project.create.mockResolvedValue({
+      id: 4,
+      name: "Payments",
+      color: "#2563EB",
+      weeklyLaborBudgetCents: 800000,
+      _count: { shifts: 0, requirements: 1 },
+    });
+
+    const response = await request(app).post("/api/projects").send({
+      name: "Payments",
+      color: "#2563EB",
+      weeklyLaborBudgetCents: 800000,
+      requirements: [{
+        dayOfWeek: "MONDAY",
+        startMinute: 540,
+        endMinute: 1020,
+        requiredEmployees: 2,
+        requiredSkillId: 2,
+        minimumSkillLevel: 3,
+        priority: "HIGH",
+      }],
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.body.requirementCount).toBe(1);
+    expect(prismaMock.project.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        weeklyLaborBudgetCents: 800000,
+        requirements: { create: [expect.objectContaining({ priority: "HIGH" })] },
+      }),
+    }));
+  });
+
+  it("rejects a requirement skill level without a selected skill", async () => {
+    const response = await request(app)
+      .post("/api/project-requirements")
+      .send({
+        projectId: 1,
+        dayOfWeek: "MONDAY",
+        startMinute: 540,
+        endMinute: 1020,
+        requiredEmployees: 2,
+        requiredSkillId: null,
+        minimumSkillLevel: 3,
+        priority: "HIGH",
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("creates a valid project staffing requirement", async () => {
+    prismaMock.project.findUnique.mockResolvedValue({ id: 1 });
+    prismaMock.skill.findUnique.mockResolvedValue({ id: 2 });
+    prismaMock.projectRequirement.create.mockResolvedValue({
+      id: 20,
+      projectId: 1,
+      dayOfWeek: "MONDAY",
+      startMinute: 540,
+      endMinute: 1020,
+      requiredEmployees: 2,
+      requiredSkillId: 2,
+      minimumSkillLevel: 3,
+      priority: "HIGH",
+      project: { id: 1, name: "Mobile Banking" },
+      requiredSkill: { id: 2, name: "TypeScript" },
+    });
+
+    const response = await request(app)
+      .post("/api/project-requirements")
+      .send({
+        projectId: 1,
+        dayOfWeek: "MONDAY",
+        startMinute: 540,
+        endMinute: 1020,
+        requiredEmployees: 2,
+        requiredSkillId: 2,
+        minimumSkillLevel: 3,
+        priority: "HIGH",
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.id).toBe(20);
+    expect(prismaMock.projectRequirement.create).toHaveBeenCalledOnce();
   });
 
   it("rejects an overlapping shift", async () => {

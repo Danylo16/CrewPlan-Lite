@@ -41,6 +41,7 @@ shiftRouter.get("/", async (request, response) => {
 
   const { from, to } = validationResult.data;
   const where: Prisma.ShiftWhereInput = {};
+  where.status = "COMMITTED";
 
   if (from) {
     where.endAt = {
@@ -150,6 +151,8 @@ shiftRouter.post("/", async (request, response) => {
         projectId,
         startAt: startDate,
         endAt: endDate,
+        kind: "GENERAL",
+        origin: "MANUAL",
         ...(note !== undefined ? { note } : {}),
       },
       include: {

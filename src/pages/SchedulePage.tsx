@@ -1,10 +1,14 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { apiRequest } from "../api/client";
 import type {
+  AppliedSchedule,
   Employee,
   Holiday,
   Project,
+  ProposedAssignment,
+  SchedulePreview,
   Shift,
+  UnfilledRequirement,
 } from "../types";
 
 interface ShiftForm {
@@ -14,6 +18,8 @@ interface ShiftForm {
   endAt: string;
   note: string;
 }
+
+const SCHEDULE_TIME_ZONE = "Europe/Vienna";
 
 function startOfWeek(date: Date) {
   const result = new Date(date);
@@ -41,34 +47,92 @@ function toDateKey(date: Date) {
 }
 
 function toLocalInputValue(date: Date) {
-  const timezoneOffset = date.getTimezoneOffset() * 60_000;
+  const parts = scheduleDateTimeParts(date);
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
 
-  return new Date(date.getTime() - timezoneOffset)
-    .toISOString()
-    .slice(0, 16);
+function scheduleInputToUtc(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!match) {
+    throw new Error("Invalid shift date or time");
+  }
+  const [, year, month, day, hour, minute] = match;
+  const localTimestamp = Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+  );
+  let candidate = localTimestamp;
+
+  for (let iteration = 0; iteration < 2; iteration += 1) {
+    const parts = scheduleDateTimeParts(new Date(candidate));
+    const representedTimestamp = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour),
+      Number(parts.minute),
+    );
+    candidate -= representedTimestamp - localTimestamp;
+  }
+
+  const result = new Date(candidate);
+  if (toLocalInputValue(result) !== value) {
+    throw new Error("This local time does not exist in Europe/Vienna");
+  }
+
+  return result.toISOString();
+}
+
+function scheduleDateKey(value: string) {
+  const parts = scheduleDateTimeParts(new Date(value));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function weekBoundaryUtc(date: Date, daysToAdd = 0) {
+  return scheduleInputToUtc(`${toDateKey(addDays(date, daysToAdd))}T00:00`);
+}
+
+function scheduleDateTimeParts(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: SCHEDULE_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+
+  return {
+    year: value("year"),
+    month: value("month"),
+    day: value("day"),
+    hour: value("hour"),
+    minute: value("minute"),
+  };
 }
 
 function createInitialForm(referenceDate = new Date()): ShiftForm {
-  const start = new Date(referenceDate);
-
-  if (
-    start.getHours() === 0 &&
-    start.getMinutes() === 0 &&
-    start.getSeconds() === 0
-  ) {
-    start.setHours(9, 0, 0, 0);
-  } else {
-    start.setMinutes(0, 0, 0);
-  }
-
-  const end = new Date(start);
-  end.setHours(end.getHours() + 4);
+  const isDateOnlyReference = referenceDate.getHours() === 0
+    && referenceDate.getMinutes() === 0
+    && referenceDate.getSeconds() === 0;
+  const start = isDateOnlyReference
+    ? `${toDateKey(referenceDate)}T09:00`
+    : toLocalInputValue(referenceDate).replace(/:\d{2}$/, ":00");
+  const end = toLocalInputValue(
+    new Date(new Date(scheduleInputToUtc(start)).getTime() + 4 * 60 * 60_000),
+  );
 
   return {
     employeeId: "",
     projectId: "",
-    startAt: toLocalInputValue(start),
-    endAt: toLocalInputValue(end),
+    startAt: start,
+    endAt: end,
     note: "",
   };
 }
@@ -77,7 +141,31 @@ function formatTime(date: string) {
   return new Intl.DateTimeFormat("en-GB", {
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: SCHEDULE_TIME_ZONE,
   }).format(new Date(date));
+}
+
+function formatMinutes(minutes: number) {
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = String(minutes % 60).padStart(2, "0");
+
+  return `${hours}:${remainingMinutes}`;
+}
+
+function describeRejections(requirement: UnfilledRequirement) {
+  const labels = {
+    NOT_AVAILABLE: "unavailable",
+    MISSING_SKILL: "missing skill",
+    OVERLAP: "overlap",
+    WEEKLY_LIMIT: "weekly limit",
+  } as const;
+
+  return Object.entries(requirement.rejectionCounts)
+    .filter(([, count]) => count > 0)
+    .map(([reason, count]) =>
+      `${count} ${labels[reason as keyof typeof labels]}`,
+    )
+    .join(" · ");
 }
 
 export function SchedulePage() {
@@ -103,13 +191,16 @@ export function SchedulePage() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isApplying, setIsApplying] = useState(false);
+  const [replaceExisting, setReplaceExisting] = useState(false);
+  const [preview, setPreview] = useState<SchedulePreview | null>(null);
+  const [scheduleReloadKey, setScheduleReloadKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const days = Array.from({ length: 7 }, (_, index) =>
     addDays(weekStart, index),
   );
-
-  const weekEnd = addDays(weekStart, 7);
 
   const filteredShifts = shifts.filter((shift) => {
     const matchesEmployee =
@@ -123,6 +214,23 @@ export function SchedulePage() {
     return matchesEmployee && matchesProject;
   });
 
+  const filteredAssignments = (preview?.assignments ?? []).filter(
+    (assignment) => {
+      const matchesEmployee =
+        !employeeFilter ||
+        assignment.employeeId === Number(employeeFilter);
+      const matchesProject =
+        !projectFilter ||
+        assignment.projectId === Number(projectFilter);
+
+      return matchesEmployee && matchesProject;
+    },
+  );
+
+  const visiblePersistedShifts = preview?.replaceExisting
+    ? []
+    : filteredShifts;
+
   useEffect(() => {
     async function loadSchedule() {
       setIsLoading(true);
@@ -130,8 +238,8 @@ export function SchedulePage() {
       setHolidayWarning(false);
 
       try {
-        const from = encodeURIComponent(weekStart.toISOString());
-        const to = encodeURIComponent(weekEnd.toISOString());
+        const from = encodeURIComponent(weekBoundaryUtc(weekStart));
+        const to = encodeURIComponent(weekBoundaryUtc(weekStart, 7));
 
         const holidayFrom = toDateKey(weekStart);
         const holidayTo = toDateKey(addDays(weekStart, 6));
@@ -187,7 +295,7 @@ export function SchedulePage() {
     }
 
     void loadSchedule();
-  }, [weekStart]);
+  }, [weekStart, scheduleReloadKey]);
 
   function resetShiftForm() {
     setForm((currentForm) => ({
@@ -219,9 +327,12 @@ export function SchedulePage() {
   }
 
   function belongsToVisibleWeek(shift: Shift) {
+    const visibleStart = new Date(weekBoundaryUtc(weekStart));
+    const visibleEnd = new Date(weekBoundaryUtc(weekStart, 7));
+
     return (
-      new Date(shift.endAt) > weekStart &&
-      new Date(shift.startAt) < weekEnd
+      new Date(shift.endAt) > visibleStart &&
+      new Date(shift.startAt) < visibleEnd
     );
   }
 
@@ -231,6 +342,7 @@ export function SchedulePage() {
     setWeekStart(nextWeek);
     setEditingShift(null);
     setError(null);
+    setPreview(null);
 
     setForm((currentForm) => ({
       ...createInitialForm(nextWeek),
@@ -245,6 +357,7 @@ export function SchedulePage() {
     setWeekStart(startOfWeek(now));
     setEditingShift(null);
     setError(null);
+    setPreview(null);
 
     setForm((currentForm) => ({
       ...createInitialForm(now),
@@ -270,8 +383,8 @@ export function SchedulePage() {
           body: JSON.stringify({
             employeeId: Number(form.employeeId),
             projectId: Number(form.projectId),
-            startAt: new Date(form.startAt).toISOString(),
-            endAt: new Date(form.endAt).toISOString(),
+            startAt: scheduleInputToUtc(form.startAt),
+            endAt: scheduleInputToUtc(form.endAt),
             note: form.note.trim()
               ? form.note.trim()
               : editingShift
@@ -298,6 +411,7 @@ export function SchedulePage() {
       });
 
       resetShiftForm();
+      setPreview(null);
     } catch (submitError) {
       setError(
         submitError instanceof Error
@@ -337,6 +451,7 @@ export function SchedulePage() {
       );
 
       resetShiftForm();
+      setPreview(null);
     } catch (deleteError) {
       setError(
         deleteError instanceof Error
@@ -346,6 +461,75 @@ export function SchedulePage() {
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  async function handleGenerateSchedule() {
+    setError(null);
+    setIsGenerating(true);
+    setEditingShift(null);
+
+    try {
+      const generatedPreview = await apiRequest<SchedulePreview>(
+        "/schedule/generate",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            weekStart: toDateKey(weekStart),
+            replaceExisting,
+          }),
+        },
+      );
+
+      setPreview(generatedPreview);
+    } catch (generateError) {
+      setError(
+        generateError instanceof Error
+          ? generateError.message
+          : "Failed to generate schedule",
+      );
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
+  async function handleApplySchedule() {
+    if (!preview) {
+      return;
+    }
+
+    setError(null);
+    setIsApplying(true);
+
+    try {
+      await apiRequest<AppliedSchedule>("/schedule/apply", {
+        method: "POST",
+        body: JSON.stringify({
+          weekStart: preview.weekStart,
+          replaceExisting: preview.replaceExisting,
+          previewId: preview.previewId,
+          inputVersion: preview.inputVersion,
+        }),
+      });
+
+      setPreview(null);
+      setScheduleReloadKey((current) => current + 1);
+    } catch (applyError) {
+      setError(
+        applyError instanceof Error
+          ? applyError.message
+          : "Failed to apply schedule",
+      );
+    } finally {
+      setIsApplying(false);
+    }
+  }
+
+  function assignmentEmployee(assignment: ProposedAssignment) {
+    return employees.find((employee) => employee.id === assignment.employeeId);
+  }
+
+  function assignmentProject(assignment: ProposedAssignment) {
+    return projects.find((project) => project.id === assignment.projectId);
   }
 
   return (
@@ -545,6 +729,124 @@ export function SchedulePage() {
         </div>
       )}
 
+      <div className="panel schedule-generator">
+        <div className="generator-heading">
+          <div>
+            <span className="generator-eyebrow">Constraint solver</span>
+            <h3>Generate weekly schedule</h3>
+            <p>
+              Assign employees by availability, skills, project priority,
+              and weekly hour limits.
+            </p>
+          </div>
+
+          <div className="generator-controls">
+            <label className="replace-toggle">
+              <input
+                type="checkbox"
+                checked={replaceExisting}
+                disabled={isGenerating || isApplying}
+                onChange={(event) => {
+                  setReplaceExisting(event.target.checked);
+                  setPreview(null);
+                }}
+              />
+              Replace existing shifts
+            </label>
+
+            <button
+              type="button"
+              className="primary-button"
+              disabled={isGenerating || isApplying || isLoading}
+              onClick={handleGenerateSchedule}
+            >
+              {isGenerating ? "Optimizing…" : "Generate schedule"}
+            </button>
+          </div>
+        </div>
+
+        {preview && (
+          <div className="schedule-preview-summary">
+            <div className="preview-metrics">
+              <div>
+                <span>Coverage</span>
+                <strong>{preview.metrics.coveragePercent}%</strong>
+              </div>
+              <div>
+                <span>Existing</span>
+                <strong>
+                  {preview.metrics.existingPositions}
+                </strong>
+              </div>
+              <div>
+                <span>Proposed</span>
+                <strong>
+                  {preview.metrics.proposedPositions}
+                </strong>
+              </div>
+              <div>
+                <span>Conflicts</span>
+                <strong>{preview.metrics.hardConflicts}</strong>
+              </div>
+            </div>
+
+            {preview.unfilledRequirements.length > 0 && (
+              <details className="unfilled-requirements">
+                <summary>
+                  {preview.unfilledRequirements.length} unfilled position
+                  {preview.unfilledRequirements.length === 1 ? "" : "s"}
+                </summary>
+
+                {preview.unfilledRequirements.map((requirement) => {
+                  const project = projects.find(
+                    (item) => item.id === requirement.projectId,
+                  );
+
+                  return (
+                    <div
+                      className="unfilled-item"
+                      key={`${requirement.requirementId}-${requirement.positionIndex}`}
+                    >
+                      <span className={`priority-badge ${requirement.priority.toLowerCase()}`}>
+                        {requirement.priority}
+                      </span>
+                      <div>
+                        <strong>{project?.name ?? "Unknown project"}</strong>
+                        <span>
+                          {requirement.dayOfWeek.toLowerCase()} ·{" "}
+                          {formatMinutes(requirement.startMinute)}–
+                          {formatMinutes(requirement.endMinute)}
+                        </span>
+                        <small>{describeRejections(requirement)}</small>
+                      </div>
+                    </div>
+                  );
+                })}
+              </details>
+            )}
+
+            <div className="preview-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={isApplying}
+                onClick={() => setPreview(null)}
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={isApplying}
+                onClick={handleApplySchedule}
+              >
+                {isApplying ? "Applying…" : "Apply schedule"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="schedule-toolbar">
         <div className="schedule-filters">
           <label>
@@ -598,8 +900,10 @@ export function SchedulePage() {
         </div>
 
         <span className="visible-shifts-count">
-         {filteredShifts.length}{" "}
-         {filteredShifts.length === 1 ? "visible shift" : "visible shifts"}
+         {visiblePersistedShifts.length + filteredAssignments.length}{" "}
+         {visiblePersistedShifts.length + filteredAssignments.length === 1
+           ? "visible shift"
+           : "visible shifts"}
         </span>
       </div>
 
@@ -615,14 +919,12 @@ export function SchedulePage() {
       ) : (
         <div className="calendar">
           {days.map((day) => {
-            const dayShifts = filteredShifts.filter((shift) => {
-              const shiftDate = new Date(shift.startAt);
+            const dayShifts = visiblePersistedShifts.filter((shift) => {
+              return scheduleDateKey(shift.startAt) === toDateKey(day);
+            });
 
-              return (
-                shiftDate.getFullYear() === day.getFullYear() &&
-                shiftDate.getMonth() === day.getMonth() &&
-                shiftDate.getDate() === day.getDate()
-              );
+            const dayAssignments = filteredAssignments.filter((assignment) => {
+              return scheduleDateKey(assignment.startAt) === toDateKey(day);
             });
 
             const dayHolidays = holidays.filter(
@@ -660,7 +962,7 @@ export function SchedulePage() {
                 ))}
 
                 <div className="day-shifts">
-                  {dayShifts.length === 0 && (
+                  {dayShifts.length === 0 && dayAssignments.length === 0 && (
                     <span className="no-shifts">No shifts</span>
                   )}
 
@@ -688,6 +990,30 @@ export function SchedulePage() {
                       {shift.note && <small>{shift.note}</small>}
                     </button>
                   ))}
+
+                  {dayAssignments.map((assignment) => {
+                    const employee = assignmentEmployee(assignment);
+                    const project = assignmentProject(assignment);
+
+                    return (
+                      <div
+                        className="shift-card proposed-shift"
+                        key={`preview-${assignment.requirementId}-${assignment.positionIndex}`}
+                        style={{
+                          borderLeftColor: project?.color ?? "#5267df",
+                        }}
+                      >
+                        <small className="preview-label">Proposed</small>
+                        <strong>{project?.name ?? "Unknown project"}</strong>
+                        <span>
+                          {formatTime(assignment.startAt)}
+                          {" – "}
+                          {formatTime(assignment.endAt)}
+                        </span>
+                        <p>{employee?.name ?? "Unknown employee"}</p>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             );
