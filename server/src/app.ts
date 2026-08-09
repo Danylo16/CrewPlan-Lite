@@ -12,6 +12,7 @@ import {
   workPackageRouter,
 } from "./routes/workPackages.js";
 import { workLogRouter } from "./routes/workLogs.js";
+import { portfolioPlanRouter } from "./routes/portfolioPlan.js";
 
 export const app = express();
 
@@ -28,6 +29,7 @@ app.use("/api/schedule", scheduleRouter);
 app.use("/api/projects/:projectId/work-packages", projectWorkPackageRouter);
 app.use("/api/work-packages", workPackageRouter);
 app.use("/api/work-logs", workLogRouter);
+app.use("/api/portfolio-plan", portfolioPlanRouter);
 
 app.get("/api/health", (_request, response) => {
   response.json({

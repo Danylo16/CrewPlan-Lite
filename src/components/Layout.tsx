@@ -10,7 +10,8 @@ export function Layout() {
         </div>
 
         <nav>
-          <NavLink to="/">Schedule</NavLink>
+          <NavLink to="/" end>Portfolio plan</NavLink>
+          <NavLink to="/schedule">Schedule</NavLink>
           <NavLink to="/employees">Employees</NavLink>
           <NavLink to="/projects">Projects</NavLink>
         </nav>
