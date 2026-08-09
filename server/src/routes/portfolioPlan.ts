@@ -41,7 +41,11 @@ portfolioPlanRouter.post("/apply", async (request, response) => {
   if (!result.success) return response.status(400).json({ code: "VALIDATION_ERROR", message: "Invalid portfolio plan apply request", errors: result.error.issues });
   try {
     const applied = await prisma.$transaction(async (transaction) => {
-      const preview = await buildPortfolioPlanPreview(transaction, result.data);
+      const preview = await buildPortfolioPlanPreview(transaction, {
+        horizonStart: result.data.horizonStart,
+        horizonWeeks: result.data.horizonWeeks,
+        replaceGenerated: result.data.replaceGenerated,
+      });
       if (preview.previewId !== result.data.previewId || preview.inputVersion !== result.data.inputVersion) {
         throw new Error("PORTFOLIO_PREVIEW_STALE");
       }

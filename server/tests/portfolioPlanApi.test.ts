@@ -62,6 +62,11 @@ describe("portfolio planning API", () => {
     });
 
     expect(response.status).toBe(201);
+    expect(previewMock).toHaveBeenCalledWith(prismaMock, {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 2,
+      replaceGenerated: true,
+    });
     expect(response.body.createdShifts).toBe(2);
     expect(prismaMock.shift.deleteMany).toHaveBeenCalledWith({
       where: expect.objectContaining({ origin: "SOLVER", status: "COMMITTED" }),
