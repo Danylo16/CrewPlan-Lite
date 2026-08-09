@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  test-and-build:
+  frontend:
     runs-on: ubuntu-latest
 
     env:
@@ -24,7 +24,6 @@ jobs:
           cache: yarn
           cache-dependency-path: |
             yarn.lock
-            server/yarn.lock
 
       - name: Install frontend dependencies
         run: yarn install --frozen-lockfile
@@ -32,18 +31,35 @@ jobs:
       - name: Build frontend
         run: yarn build
 
-      - name: Install backend dependencies
+  backend:
+    runs-on: ubuntu-latest
+
+    env:
+      DATABASE_URL: postgresql://user:password@localhost:5432/crewplan
+
+    defaults:
+      run:
         working-directory: server
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: server/yarn.lock
+
+      - name: Install backend dependencies in isolation
         run: yarn install --frozen-lockfile
 
       - name: Generate Prisma Client
-        working-directory: server
         run: yarn prisma generate
 
       - name: Test backend
-        working-directory: server
         run: yarn test
 
       - name: Build backend
-        working-directory: server
         run: yarn build

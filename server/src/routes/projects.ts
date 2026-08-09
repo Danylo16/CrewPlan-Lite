@@ -458,6 +458,7 @@ projectRouter.post("/:id/transition", async (request, response) => {
     where: { id: idResult.data },
     include: {
       _count: { select: { workPackages: true, requirements: true } },
+      workPackages: { select: { id: true, name: true, status: true, remainingMinutes: true } },
     },
   });
 
@@ -487,6 +488,19 @@ projectRouter.post("/:id/transition", async (request, response) => {
       code: "PROJECT_NOT_READY",
       message: "A planned project needs a start date and at least one work package or fixed coverage requirement",
     });
+  }
+
+  if (nextStatus === "COMPLETED") {
+    const unfinished = project.workPackages.filter(
+      (workPackage) => workPackage.status !== "COMPLETED" && workPackage.status !== "CANCELLED",
+    );
+    if (unfinished.length > 0) {
+      return response.status(409).json({
+        code: "PROJECT_HAS_UNFINISHED_WORK",
+        message: `Complete or cancel work packages first: ${unfinished.map((item) => item.name).join(", ")}`,
+        workPackages: unfinished,
+      });
+    }
   }
 
   const now = new Date();

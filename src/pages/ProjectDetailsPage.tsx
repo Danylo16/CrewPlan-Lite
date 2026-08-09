@@ -128,7 +128,9 @@ export function ProjectDetailsPage() {
       setLogForm((current) => ({
         ...current,
         employeeId: current.employeeId || String(employeeData[0]?.id ?? ""),
-        workPackageId: current.workPackageId || String(projectData.workPackages[0]?.id ?? ""),
+        workPackageId: current.workPackageId || String(
+          projectData.workPackages.find((item) => item.status === "IN_PROGRESS")?.id ?? "",
+        ),
       }));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load project");
@@ -283,6 +285,13 @@ export function ProjectDetailsPage() {
 
   if (!project) return <section><Link to="/projects">← Portfolio</Link>{error ? <div className="error-message">{error}</div> : <p className="muted-text">Loading project…</p>}</section>;
 
+  const inProgressPackages = project.workPackages.filter(
+    (workPackage) => workPackage.status === "IN_PROGRESS",
+  );
+  const projectCanComplete = project.workPackages.every(
+    (workPackage) => workPackage.status === "COMPLETED" || workPackage.status === "CANCELLED",
+  );
+
   return <section>
     <div className="page-header project-detail-header">
       <div>
@@ -291,7 +300,10 @@ export function ProjectDetailsPage() {
         <p>{project.optimizationStrategy.replaceAll("_", " ")} · {project.priority} priority</p>
       </div>
       <div className="card-actions">
-        {transitions[project.status].map((status) => <button className={status === "CANCELLED" || status === "ARCHIVED" ? "danger-button" : "secondary-button"} disabled={isBusy} key={status} type="button" onClick={() => void transition(status)}>{status.replaceAll("_", " ")}</button>)}
+        {transitions[project.status].map((status) => {
+          const disabled = isBusy || (status === "COMPLETED" && !projectCanComplete);
+          return <button className={status === "CANCELLED" || status === "ARCHIVED" ? "danger-button" : "secondary-button"} disabled={disabled} key={status} title={status === "COMPLETED" && !projectCanComplete ? "Complete or cancel every work package first" : undefined} type="button" onClick={() => void transition(status)}>{status.replaceAll("_", " ")}</button>;
+        })}
       </div>
     </div>
     {error && <div className="error-message portfolio-error">{error}</div>}
@@ -315,13 +327,16 @@ export function ProjectDetailsPage() {
 
     <div className="work-package-grid">{project.workPackages.map((workPackage) => {
       const progress = workPackage.completedMinutes + workPackage.remainingMinutes === 0 ? 0 : Math.round((workPackage.completedMinutes / (workPackage.completedMinutes + workPackage.remainingMinutes)) * 100);
+      const blockers = workPackage.incomingDependencies
+        .map((dependency) => project.workPackages.find((item) => item.id === dependency.predecessorId))
+        .filter((item): item is WorkPackage => item !== undefined && item.status !== "COMPLETED");
       return <article className="panel work-package-card" key={workPackage.id}>
         <div className="work-package-header"><div><span className={`status-badge ${workPackage.status.toLowerCase()}`}>{workPackage.status}</span><h4>{workPackage.name}</h4></div><strong>{progress}%</strong></div>
         <div className="progress-track"><span style={{ width: `${progress}%` }} /></div>
         <p>{workPackage.description || "No description"}</p>
         <div className="package-facts"><span>{workPackage.requiredSkill.name} · L{workPackage.minimumSkillLevel}+</span><span>{hours(workPackage.completedMinutes)} / {hours(workPackage.estimatedMinutes)} baseline</span><span>{hours(workPackage.remainingMinutes)} remaining</span><span>Up to {workPackage.maxParallelEmployees} parallel</span></div>
-        {workPackage.incomingDependencies.length > 0 && <p className="dependency-text">Depends on {workPackage.incomingDependencies.map((dependency) => project.workPackages.find((item) => item.id === dependency.predecessorId)?.name).filter(Boolean).join(", ")}</p>}
-        <div className="card-actions">{workPackage.status === "TODO" && <button className="secondary-button" type="button" onClick={() => void updatePackage(workPackage, { status: "IN_PROGRESS" })}>Start</button>}{workPackage.remainingMinutes === 0 && workPackage.status !== "COMPLETED" && <button className="secondary-button" type="button" onClick={() => void updatePackage(workPackage, { status: "COMPLETED" })}>Complete</button>}<button className="danger-button" type="button" onClick={() => void deletePackage(workPackage)}>Delete</button></div>
+        {blockers.length > 0 ? <div className="dependency-blocked"><strong>Blocked</strong><span>Complete {blockers.map((item) => item.name).join(", ")} first</span></div> : workPackage.incomingDependencies.length > 0 && <p className="dependency-ready">Dependencies completed</p>}
+        <div className="card-actions">{workPackage.status === "TODO" && <button className="secondary-button" disabled={blockers.length > 0 || isBusy} title={blockers.length > 0 ? "Blocked by unfinished dependencies" : undefined} type="button" onClick={() => void updatePackage(workPackage, { status: "IN_PROGRESS" })}>Start</button>}{workPackage.remainingMinutes === 0 && workPackage.status !== "COMPLETED" && <button className="secondary-button" type="button" onClick={() => void updatePackage(workPackage, { status: "COMPLETED" })}>Complete</button>}<button className="danger-button" type="button" onClick={() => void deletePackage(workPackage)}>Delete</button></div>
       </article>;
     })}</div>
 
@@ -334,8 +349,8 @@ export function ProjectDetailsPage() {
     </form>}
     <div className="panel coverage-list">{coverage.length === 0 ? <p className="muted-text">No fixed coverage requirements.</p> : coverage.map((requirement) => <div className="coverage-row" key={requirement.id}><div><strong>{requirement.dayOfWeek}</strong><span>{clockTime(requirement.startMinute)}–{clockTime(requirement.endMinute)}</span></div><span>{requirement.requiredEmployees} employee{requirement.requiredEmployees === 1 ? "" : "s"}</span><span>{requirement.requiredSkill ? `${requirement.requiredSkill.name} · L${requirement.minimumSkillLevel}+` : "Any skill"}</span><span className={`status-badge ${requirement.priority.toLowerCase()}`}>{requirement.priority}</span><button className="danger-button" type="button" onClick={() => void deleteCoverage(requirement)}>Delete</button></div>)}</div>
 
-    <div className="portfolio-section-heading actuals-heading"><div><h3>Actual work</h3><p>Confirmed time drives progress and actual project cost.</p></div><button className="primary-button" disabled={project.workPackages.length === 0} type="button" onClick={() => setShowLogForm((value) => !value)}>+ Record work</button></div>
-    {showLogForm && <form className="panel portfolio-form" onSubmit={recordWork}><div className="form-row two-columns"><label>Employee<select required value={logForm.employeeId} onChange={(event) => setLogForm({ ...logForm, employeeId: event.target.value })}>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label><label>Work package<select required value={logForm.workPackageId} onChange={(event) => setLogForm({ ...logForm, workPackageId: event.target.value })}>{project.workPackages.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div><div className="form-row two-columns"><label>Started<input required type="datetime-local" value={logForm.startedAt} onChange={(event) => setLogForm({ ...logForm, startedAt: event.target.value })} /></label><label>Ended<input required type="datetime-local" value={logForm.endedAt} onChange={(event) => setLogForm({ ...logForm, endedAt: event.target.value })} /></label></div><label>Note<textarea value={logForm.note} onChange={(event) => setLogForm({ ...logForm, note: event.target.value })} /></label><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowLogForm(false)}>Cancel</button><button className="primary-button" disabled={isBusy}>Record and confirm</button></div></form>}
+    <div className="portfolio-section-heading actuals-heading"><div><h3>Actual work</h3><p>Confirmed time drives progress and actual project cost.</p></div><button className="primary-button" disabled={inProgressPackages.length === 0} title={inProgressPackages.length === 0 ? "Start a work package first" : undefined} type="button" onClick={() => setShowLogForm((value) => !value)}>+ Record work</button></div>
+    {showLogForm && <form className="panel portfolio-form" onSubmit={recordWork}><div className="form-row two-columns"><label>Employee<select required value={logForm.employeeId} onChange={(event) => setLogForm({ ...logForm, employeeId: event.target.value })}>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}</select></label><label>Work package<select required value={logForm.workPackageId} onChange={(event) => setLogForm({ ...logForm, workPackageId: event.target.value })}>{inProgressPackages.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div><div className="form-row two-columns"><label>Started<input required type="datetime-local" value={logForm.startedAt} onChange={(event) => setLogForm({ ...logForm, startedAt: event.target.value })} /></label><label>Ended<input required type="datetime-local" value={logForm.endedAt} onChange={(event) => setLogForm({ ...logForm, endedAt: event.target.value })} /></label></div><label>Note<textarea value={logForm.note} onChange={(event) => setLogForm({ ...logForm, note: event.target.value })} /></label><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowLogForm(false)}>Cancel</button><button className="primary-button" disabled={isBusy}>Record and confirm</button></div></form>}
     <div className="panel actuals-table">{workLogs.length === 0 ? <p className="muted-text">No actual work recorded.</p> : workLogs.map((log) => <div className="actual-row" key={log.id}><div><strong>{log.employee.name}</strong><span>{log.workPackage.name} · {new Date(log.startedAt).toLocaleString()}</span></div><span>{hours(log.minutes)}</span><span>{log.actualCostCents === null ? "Draft" : `€${(log.actualCostCents / 100).toFixed(2)}`}</span><span className={`status-badge ${log.status.toLowerCase()}`}>{log.status}</span>{log.status === "CONFIRMED" && <button className="danger-button" type="button" onClick={() => void voidLog(log)}>Void</button>}</div>)}</div>
   </section>;
 }

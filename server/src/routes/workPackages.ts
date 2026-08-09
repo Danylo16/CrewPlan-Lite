@@ -185,8 +185,28 @@ workPackageRouter.patch("/:id", async (request, response) => {
     return response.status(400).json({ code: "VALIDATION_ERROR", message: "Invalid work package" });
   }
 
-  const current = await prisma.workPackage.findUnique({ where: { id: idResult.data } });
+  const current = await prisma.workPackage.findUnique({
+    where: { id: idResult.data },
+    include: {
+      incomingDependencies: {
+        include: { predecessor: { select: { id: true, name: true, status: true } } },
+      },
+    },
+  });
   if (!current) return response.status(404).json({ code: "WORK_PACKAGE_NOT_FOUND", message: "Work package does not exist" });
+
+  if (bodyResult.data.status === "IN_PROGRESS") {
+    const blockers = current.incomingDependencies
+      .map((dependency) => dependency.predecessor)
+      .filter((predecessor) => predecessor.status !== "COMPLETED");
+    if (blockers.length > 0) {
+      return response.status(409).json({
+        code: "WORK_PACKAGE_BLOCKED",
+        message: `Complete dependencies first: ${blockers.map((item) => item.name).join(", ")}`,
+        blockers,
+      });
+    }
+  }
 
   if (bodyResult.data.status === "COMPLETED" && (bodyResult.data.remainingMinutes ?? current.remainingMinutes) !== 0) {
     return response.status(409).json({ code: "WORK_PACKAGE_HAS_REMAINING_WORK", message: "Set remaining minutes to zero before completion" });

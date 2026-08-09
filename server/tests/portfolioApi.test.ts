@@ -6,6 +6,7 @@ const prismaMock = vi.hoisted(() => ({
   project: {
     findUnique: vi.fn(),
     create: vi.fn(),
+    update: vi.fn(),
   },
   skill: {
     findMany: vi.fn(),
@@ -104,7 +105,11 @@ describe("portfolio API", () => {
       startedAt: new Date("2026-08-10T07:00:00.000Z"),
       endedAt: new Date("2026-08-10T09:00:00.000Z"),
       employee: { hourlyCostCents: 4_200 },
-      workPackage: { remainingMinutes: 180 },
+      workPackage: {
+        remainingMinutes: 180,
+        status: "IN_PROGRESS",
+        incomingDependencies: [],
+      },
     };
     prismaMock.workLog.findUnique.mockResolvedValue(workLog);
     prismaMock.workPackage.update.mockResolvedValue({});
@@ -126,5 +131,81 @@ describe("portfolio API", () => {
     expect(prismaMock.workLog.update).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ remainingMinutesApplied: 120 }),
     }));
+  });
+
+  it("blocks a work package while a predecessor is unfinished", async () => {
+    prismaMock.workPackage.findUnique.mockResolvedValue({
+      id: 11,
+      projectId: 1,
+      remainingMinutes: 900,
+      earliestStartDate: null,
+      targetEndDate: null,
+      incomingDependencies: [{
+        predecessor: { id: 10, name: "Design", status: "IN_PROGRESS" },
+      }],
+    });
+
+    const response = await request(app)
+      .patch("/api/work-packages/11")
+      .send({ status: "IN_PROGRESS" });
+
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("WORK_PACKAGE_BLOCKED");
+    expect(response.body.blockers).toEqual([
+      { id: 10, name: "Design", status: "IN_PROGRESS" },
+    ]);
+    expect(prismaMock.workPackage.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects actual work for a package that has not started", async () => {
+    prismaMock.employee.findUnique.mockResolvedValue({ id: 3 });
+    prismaMock.project.findUnique.mockResolvedValue({ id: 1 });
+    prismaMock.workPackage.findUnique.mockResolvedValue({
+      id: 10,
+      projectId: 1,
+      status: "TODO",
+      incomingDependencies: [],
+    });
+
+    const response = await request(app).post("/api/work-logs").send({
+      employeeId: 3,
+      projectId: 1,
+      workPackageId: 10,
+      startedAt: "2026-08-10T07:00:00.000Z",
+      endedAt: "2026-08-10T08:00:00.000Z",
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("WORK_PACKAGE_NOT_IN_PROGRESS");
+    expect(prismaMock.workLog.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects project completion while work packages are unfinished", async () => {
+    prismaMock.project.findUnique.mockResolvedValue({
+      id: 1,
+      status: "ACTIVE",
+      startDate: new Date("2026-08-01T00:00:00.000Z"),
+      _count: { workPackages: 2, requirements: 0 },
+      workPackages: [
+        { id: 10, name: "Design", status: "COMPLETED", remainingMinutes: 0 },
+        { id: 11, name: "Build", status: "IN_PROGRESS", remainingMinutes: 900 },
+      ],
+    });
+
+    const response = await request(app)
+      .post("/api/projects/1/transition")
+      .send({ status: "COMPLETED" });
+
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("PROJECT_HAS_UNFINISHED_WORK");
+    expect(prismaMock.project.update).not.toHaveBeenCalled();
+  });
+
+  it("exposes the deployed API version", async () => {
+    const response = await request(app).get("/api/version");
+
+    expect(response.status).toBe(200);
+    expect(response.body.service).toBe("crewplan-api");
+    expect(response.body.commit).toBeTruthy();
   });
 });

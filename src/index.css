@@ -1124,7 +1124,11 @@ textarea {
 .progress-track span { display: block; height: 100%; border-radius: inherit; background: #5267df; }
 .package-facts { display: flex; flex-wrap: wrap; gap: 7px; }
 .package-facts span { padding: 5px 8px; border-radius: 999px; color: #53627a; background: #f1f4f8; font-size: 11px; }
-.dependency-text { padding-top: 11px; border-top: 1px solid #edf0f4; }
+.dependency-blocked { display: grid; gap: 3px; margin-top: 14px; padding: 10px 12px; border: 1px solid #fed7aa; border-radius: 9px; color: #9a3412; background: #fff7ed; font-size: 12px; }
+.dependency-blocked strong { text-transform: uppercase; letter-spacing: .04em; }
+.dependency-ready { margin-top: 14px; padding-top: 11px; border-top: 1px solid #edf0f4; color: #166534 !important; font-weight: 700; }
+.secondary-button:disabled,
+.primary-button:disabled { cursor: not-allowed; opacity: .48; }
 .actuals-heading { margin-top: 36px; }
 .actuals-table { padding-block: 8px; }
 .actual-row { display: grid; grid-template-columns: minmax(220px, 1fr) 80px 100px 100px auto; gap: 14px; align-items: center; padding: 12px 4px; border-bottom: 1px solid #edf0f4; }

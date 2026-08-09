@@ -35,3 +35,12 @@ app.get("/api/health", (_request, response) => {
     message: "CrewPlan API is running",
   });
 });
+
+app.get("/api/version", (_request, response) => {
+  const commit = process.env.RENDER_GIT_COMMIT ?? process.env.GIT_COMMIT_SHA ?? "local";
+  response.json({
+    service: "crewplan-api",
+    commit: commit === "local" ? commit : commit.slice(0, 7),
+    environment: process.env.NODE_ENV ?? "development",
+  });
+});

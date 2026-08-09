@@ -74,7 +74,14 @@ workLogRouter.post("/", async (request, response) => {
   const [employee, project, workPackage, plannedAllocation] = await Promise.all([
     prisma.employee.findUnique({ where: { id: data.employeeId } }),
     prisma.project.findUnique({ where: { id: data.projectId } }),
-    prisma.workPackage.findUnique({ where: { id: data.workPackageId } }),
+    prisma.workPackage.findUnique({
+      where: { id: data.workPackageId },
+      include: {
+        incomingDependencies: {
+          include: { predecessor: { select: { id: true, name: true, status: true } } },
+        },
+      },
+    }),
     data.plannedAllocationId === null
       ? Promise.resolve(null)
       : prisma.shift.findUnique({ where: { id: data.plannedAllocationId } }),
@@ -84,6 +91,22 @@ workLogRouter.post("/", async (request, response) => {
   if (!workPackage) return response.status(404).json({ code: "WORK_PACKAGE_NOT_FOUND", message: "Work package does not exist" });
   if (workPackage.projectId !== project.id) {
     return response.status(400).json({ code: "WORK_PACKAGE_PROJECT_MISMATCH", message: "Work package does not belong to the project" });
+  }
+  if (workPackage.status !== "IN_PROGRESS") {
+    return response.status(409).json({
+      code: "WORK_PACKAGE_NOT_IN_PROGRESS",
+      message: "Actual work can only be recorded against an in-progress work package",
+    });
+  }
+  const blockers = workPackage.incomingDependencies
+    .map((dependency) => dependency.predecessor)
+    .filter((predecessor) => predecessor.status !== "COMPLETED");
+  if (blockers.length > 0) {
+    return response.status(409).json({
+      code: "WORK_PACKAGE_BLOCKED",
+      message: `Complete dependencies first: ${blockers.map((item) => item.name).join(", ")}`,
+      blockers,
+    });
   }
   if (data.plannedAllocationId !== null && !plannedAllocation) {
     return response.status(404).json({ code: "ALLOCATION_NOT_FOUND", message: "Planned allocation does not exist" });
@@ -129,10 +152,23 @@ workLogRouter.post("/:id/confirm", async (request, response) => {
     const confirmed = await prisma.$transaction(async (transaction) => {
       const workLog = await transaction.workLog.findUnique({
         where: { id: idResult.data },
-        include: { employee: true, workPackage: true },
+        include: {
+          employee: true,
+          workPackage: {
+            include: {
+              incomingDependencies: {
+                include: { predecessor: { select: { id: true, name: true, status: true } } },
+              },
+            },
+          },
+        },
       });
       if (!workLog) throw new Error("WORK_LOG_NOT_FOUND");
       if (workLog.status !== "DRAFT") throw new Error("WORK_LOG_NOT_DRAFT");
+      if (workLog.workPackage.status !== "IN_PROGRESS") throw new Error("WORK_PACKAGE_NOT_IN_PROGRESS");
+      if (workLog.workPackage.incomingDependencies.some(
+        (dependency) => dependency.predecessor.status !== "COMPLETED",
+      )) throw new Error("WORK_PACKAGE_BLOCKED");
 
       const minutes = durationMinutes(workLog.startedAt, workLog.endedAt);
       const remainingMinutesApplied = Math.min(
@@ -168,6 +204,12 @@ workLogRouter.post("/:id/confirm", async (request, response) => {
     }
     if (error instanceof Error && error.message === "WORK_LOG_NOT_DRAFT") {
       return response.status(409).json({ code: error.message, message: "Only a draft work log can be confirmed" });
+    }
+    if (error instanceof Error && error.message === "WORK_PACKAGE_NOT_IN_PROGRESS") {
+      return response.status(409).json({ code: error.message, message: "Actual work can only be confirmed for an in-progress work package" });
+    }
+    if (error instanceof Error && error.message === "WORK_PACKAGE_BLOCKED") {
+      return response.status(409).json({ code: error.message, message: "Complete all dependencies before confirming actual work" });
     }
     throw error;
   }
