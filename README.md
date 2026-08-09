@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/Danylo16/CrewPlan-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/Danylo16/CrewPlan-Lite/actions/workflows/ci.yml)
 
-A full-stack workforce scheduling application for managing employees, projects, and weekly shift assignments.
+A full-stack project portfolio capacity planner for turning project scope into feasible multi-week staffing plans.
 
-CrewPlan prevents overlapping employee shifts, visualizes projects with distinct colors, and integrates Austrian public holidays into the weekly schedule.
+CrewPlan combines project lifecycle, work-package dependencies, employee skills, availability, labor cost, recurring fixed coverage and actual progress in one rolling-horizon planning workflow.
 
 ![CrewPlan weekly schedule](docs/image.png)
 
@@ -17,8 +17,14 @@ CrewPlan prevents overlapping employee shifts, visualizes projects with distinct
 
 ## Features
 
+- Multi-week rolling-horizon portfolio planning with preview/apply safety
+- Weekly capacity, utilization, cost, budget and deadline diagnostics
+- Project lifecycle, priorities, deadlines and optimization strategies
+- Work packages with remaining hours, skill levels, dependencies and parallelism
+- Actual work logs kept separate from planned allocations
+- Fixed coverage for recurring time-specific staffing commitments
 - Weekly workforce calendar with week navigation
-- Employee and project management
+- Employee profiles with skills, availability, capacity, cost and overtime
 - Create, edit, and delete shift assignments
 - Filter schedule by employee and project
 - Color-coded project assignments
@@ -99,9 +105,34 @@ POST /api/employees
 ### Projects
 
 ```http
-GET   /api/projects
-POST  /api/projects
-PATCH /api/projects/:id
+GET    /api/projects
+GET    /api/projects/:id
+POST   /api/projects
+PATCH  /api/projects/:id
+POST   /api/projects/:id/transition
+DELETE /api/projects/:id
+```
+
+### Portfolio planner
+
+```http
+POST /api/portfolio-plan/preview
+POST /api/portfolio-plan/apply
+GET  /api/portfolio-plan/runs
+```
+
+### Work packages and actual work
+
+```http
+POST   /api/projects/:id/work-packages
+PATCH  /api/work-packages/:id
+PUT    /api/work-packages/:id/dependencies
+DELETE /api/work-packages/:id
+
+GET  /api/work-logs
+POST /api/work-logs
+POST /api/work-logs/:id/confirm
+POST /api/work-logs/:id/void
 ```
 
 ### Shifts
@@ -221,14 +252,12 @@ yarn test
 The test suite covers:
 
 - API health status
-- Invalid shift input
-- Invalid time ranges
-- Shift conflict detection
-- Adjacent shifts
-- Successful shift updates
-- Conflict detection during updates
-- Missing shift handling
-- Shift deletion
+- Shift conflicts, timezone conversion and fixed-coverage scheduling
+- Project lifecycle and archive/delete safety
+- Work-package dependency enforcement and actual-progress accounting
+- Deterministic multi-week planning and hard deadlines
+- Stale-preview protection and transactional plan application
+- Preservation of manual and historical shifts during replanning
 
 Type-check the backend:
 

@@ -234,3 +234,67 @@ export interface AppliedSchedule {
   deletedShifts: number;
   metrics: ScheduleMetrics;
 }
+
+export interface PortfolioPlanAssignment {
+  employeeId: number;
+  employeeName: string;
+  projectId: number;
+  projectName: string;
+  workPackageId: number;
+  workPackageName: string;
+  startAt: string;
+  endAt: string;
+  plannedCostCents: number;
+}
+
+export interface PortfolioPlanWeek {
+  weekStart: string;
+  capacityMinutes: number;
+  committedMinutes: number;
+  proposedMinutes: number;
+  utilizationPercent: number;
+  plannedCostCents: number;
+}
+
+export interface PortfolioPlanPreview {
+  previewId: string;
+  inputVersion: string;
+  horizonStart: string;
+  horizonEndExclusive: string;
+  horizonWeeks: number;
+  timezone: string;
+  replaceGenerated: boolean;
+  assignments: PortfolioPlanAssignment[];
+  fixedCoverageAssignments: Array<{
+    employeeId: number;
+    projectId: number;
+    projectRequirementId: number;
+    startAt: string;
+    endAt: string;
+    plannedCostCents: number;
+  }>;
+  unplannedWorkPackages: Array<{
+    workPackageId: number;
+    projectId: number;
+    name: string;
+    unplannedMinutes: number;
+    reason: string;
+  }>;
+  weekSummaries: PortfolioPlanWeek[];
+  warnings: Array<{ code: string; message: string; projectId?: number; weekStart?: string }>;
+  metrics: {
+    proposedWorkMinutes: number;
+    proposedFixedCoverageMinutes: number;
+    plannedCostCents: number;
+    assignedWorkPackages: number;
+    unplannedWorkPackages: number;
+  };
+}
+
+export interface AppliedPortfolioPlan {
+  planningRunId: string;
+  previewId: string;
+  createdShifts: number;
+  deletedShifts: number;
+  metrics: PortfolioPlanPreview["metrics"];
+}
