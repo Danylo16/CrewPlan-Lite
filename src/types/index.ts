@@ -190,6 +190,23 @@ export interface PortfolioPlanAssignment {
   workPackageName: string;
   startAt: string;
   endAt: string;
+  regularMinutes: number;
+  overtimeMinutes: number;
+  regularCostCents: number;
+  overtimeCostCents: number;
+  plannedCostCents: number;
+}
+
+export interface PortfolioPlanCostAllocation {
+  employeeId: number;
+  projectId: number;
+  projectRequirementId: number;
+  startAt: string;
+  endAt: string;
+  regularMinutes: number;
+  overtimeMinutes: number;
+  regularCostCents: number;
+  overtimeCostCents: number;
   plannedCostCents: number;
 }
 
@@ -199,7 +216,76 @@ export interface PortfolioPlanWeek {
   committedMinutes: number;
   proposedMinutes: number;
   utilizationPercent: number;
+  regularMinutes: number;
+  overtimeMinutes: number;
+  regularCostCents: number;
+  overtimeCostCents: number;
+  retainedCostCents: number;
+  fixedCoverageCostCents: number;
+  workPackageCostCents: number;
   plannedCostCents: number;
+}
+
+export interface PortfolioPlanCostBaseline {
+  plannedMinutes: number;
+  unplannedMinutes: number;
+  overtimeMinutes: number;
+  laborCostCents: number;
+}
+
+export interface PortfolioOptimizerDiagnostics {
+  algorithmVersion: string;
+  strategy: string;
+  beamWidth: number;
+  packageVariantWidth: number;
+  branchWidth: number;
+  exploredStates: number;
+  prunedStates: number;
+  dominancePrunedStates: number;
+  evaluatedPlans: number;
+  searchLimitReached: boolean;
+  runtimeMs: number;
+  objectiveVector: {
+    criticalUnplannedMinutes: number;
+    highUnplannedMinutes: number;
+    normalUnplannedMinutes: number;
+    lowUnplannedMinutes: number;
+    deadlineExposureMinutes: number;
+    overtimeMinutes: number;
+    laborCostCents: number;
+    imbalanceBasisPoints: number;
+  };
+  greedyBaseline: PortfolioPlanCostBaseline;
+  v1Baseline: PortfolioPlanCostBaseline;
+  optimized: PortfolioPlanCostBaseline;
+  improvement: PortfolioPlanCostBaseline;
+  improvementVsV1: PortfolioPlanCostBaseline;
+}
+
+export interface PortfolioProjectCostWeek {
+  weekStart: string;
+  plannedCostCents: number;
+  weeklyBudgetCents: number | null;
+  weeklyBudgetVarianceCents: number | null;
+}
+
+export interface PortfolioProjectCostSummary {
+  projectId: number;
+  projectName: string;
+  actualCostCents: number;
+  retainedCostCents: number;
+  fixedCoverageCostCents: number;
+  workPackageCostCents: number;
+  regularMinutes: number;
+  overtimeMinutes: number;
+  regularCostCents: number;
+  overtimeCostCents: number;
+  plannedCostCents: number;
+  knownCostCents: number;
+  totalBudgetCents: number | null;
+  totalBudgetVarianceCents: number | null;
+  forecastComplete: boolean;
+  weeks: PortfolioProjectCostWeek[];
 }
 
 export interface PortfolioPlanPreview {
@@ -211,14 +297,7 @@ export interface PortfolioPlanPreview {
   timezone: string;
   replaceGenerated: boolean;
   assignments: PortfolioPlanAssignment[];
-  fixedCoverageAssignments: Array<{
-    employeeId: number;
-    projectId: number;
-    projectRequirementId: number;
-    startAt: string;
-    endAt: string;
-    plannedCostCents: number;
-  }>;
+  fixedCoverageAssignments: PortfolioPlanCostAllocation[];
   unplannedWorkPackages: Array<{
     workPackageId: number;
     projectId: number;
@@ -227,11 +306,21 @@ export interface PortfolioPlanPreview {
     reason: string;
   }>;
   weekSummaries: PortfolioPlanWeek[];
+  projectCostSummaries: PortfolioProjectCostSummary[];
+  optimizerDiagnostics: PortfolioOptimizerDiagnostics;
   warnings: Array<{ code: string; message: string; projectId?: number; weekStart?: string }>;
   metrics: {
     proposedWorkMinutes: number;
     proposedFixedCoverageMinutes: number;
+    regularMinutes: number;
+    overtimeMinutes: number;
+    regularCostCents: number;
+    overtimeCostCents: number;
+    retainedCostCents: number;
+    fixedCoverageCostCents: number;
+    workPackageCostCents: number;
     plannedCostCents: number;
+    averagePlannedHourlyCostCents: number;
     assignedWorkPackages: number;
     unplannedWorkPackages: number;
   };
