@@ -11,7 +11,7 @@ export function Layout() {
 
         <nav>
           <NavLink to="/" end>Portfolio plan</NavLink>
-          <NavLink to="/schedule">Schedule</NavLink>
+          <NavLink to="/allocations">Allocation calendar</NavLink>
           <NavLink to="/employees">Employees</NavLink>
           <NavLink to="/projects">Projects</NavLink>
         </nav>
