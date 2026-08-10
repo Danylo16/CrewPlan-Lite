@@ -5,7 +5,7 @@ import { buildSchedulePreview } from "../scheduling/schedulePreview.js";
 import { allocationCostBreakdown } from "../scheduling/scoring.js";
 import { SCHEDULE_TIME_ZONE } from "../scheduling/timeAdapter.js";
 import { allocatePortfolioWork } from "./portfolioPlacementOptimizer.js";
-import type { Interval } from "./portfolioOptimizer.js";
+import type { Interval, PlanningProfile } from "./portfolioOptimizer.js";
 
 const MAX_HORIZON_WEEKS = 12;
 const MAX_WORK_PACKAGES = 150;
@@ -20,6 +20,7 @@ export interface PortfolioPlanOptions {
   horizonWeeks: number;
   replaceGenerated: boolean;
   excludedEmployeeIds?: number[];
+  planningProfile?: PlanningProfile;
 }
 
 interface CostedInterval extends Interval {
@@ -180,6 +181,7 @@ export async function buildPortfolioPlanPreview(
     ],
     futurePlannedByPackage,
     futurePlannedIntervalsByPackage,
+    planningProfile: options.planningProfile ?? "BALANCED",
   });
   const retainedAllocations: CostedInterval[] = availablePreservedHorizonShifts.map((shift) => ({
     employeeId: shift.employeeId,
@@ -431,6 +433,7 @@ export async function buildPortfolioPlanPreview(
     horizonStart: options.horizonStart,
     horizonEndExclusive: end.toISODate()!,
     horizonWeeks: options.horizonWeeks,
+    planningProfile: options.planningProfile ?? "BALANCED",
     timezone: SCHEDULE_TIME_ZONE,
     replaceGenerated: options.replaceGenerated,
     assignments: serializedAssignments,

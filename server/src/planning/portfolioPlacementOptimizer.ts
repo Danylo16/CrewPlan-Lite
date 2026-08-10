@@ -7,6 +7,7 @@ import {
   freeSegments,
   localDateAtMinute,
   objectiveVector,
+  objectiveComponents,
   overlaps,
   resultMetrics,
   searchPackageOrders,
@@ -32,6 +33,7 @@ const PACKAGE_VARIANT_WIDTH = 3;
 const PLACEMENT_BRANCH_WIDTH = 3;
 const PLACEMENT_ORDER_LIMIT = 2;
 const MAX_PLACEMENT_STATES = 50_000;
+const PLACEMENT_LOOKAHEAD_DAYS = 3;
 
 interface PlacementState {
   assignments: PlanAssignment[];
@@ -142,6 +144,15 @@ function placementCandidates(
   remaining: number,
   packageIntervals: Interval[],
 ) {
+  const collected = [] as Array<{
+    employee: PortfolioOptimizerInput["employees"][number];
+    interval: Interval;
+    minutes: number;
+    cost: ReturnType<typeof allocationCostBreakdown>;
+    employeeScarcity: number;
+    usedMinutes: number;
+  }>;
+  let firstCandidateDay: DateTime | null = null;
   for (
     let day = earliest.startOf("day");
     day < input.end;
@@ -203,30 +214,50 @@ function placementCandidates(
         ) return [];
         const cost = allocationCostBreakdown(employee, used, minutes);
         const employeeScarcity = employee.skills.length;
-        return [{ employee, interval, minutes, cost, employeeScarcity }];
+        return [{ employee, interval, minutes, cost, employeeScarcity, usedMinutes: used }];
       })
-      .sort((first, second) =>
-        first.interval.startAt.getTime() - second.interval.startAt.getTime()
-        || first.cost.overtimeMinutes - second.cost.overtimeMinutes
-        || first.employeeScarcity - second.employeeScarcity
-        || first.cost.totalCostCents - second.cost.totalCostCents
-        || first.employee.id - second.employee.id,
-      );
-    if (candidates.length > 0) return candidates;
+      .sort((first, second) => first.employee.id - second.employee.id);
+    if (candidates.length > 0) {
+      firstCandidateDay ??= day;
+      collected.push(...candidates);
+    }
+    if (
+      firstCandidateDay !== null
+      && day.diff(firstCandidateDay, "days").days >= PLACEMENT_LOOKAHEAD_DAYS - 1
+    ) break;
   }
-  return [];
+  return collected.sort((first, second) => {
+    const profile = input.planningProfile ?? "BALANCED";
+    if (profile === "COST_FIRST") {
+      return first.cost.overtimeMinutes - second.cost.overtimeMinutes
+        || first.cost.totalCostCents - second.cost.totalCostCents
+        || first.interval.startAt.getTime() - second.interval.startAt.getTime()
+        || first.employee.id - second.employee.id;
+    }
+    if (profile === "RESILIENCE_FIRST") {
+      return first.usedMinutes / Math.max(1, first.employee.maxWeeklyMinutes)
+        - second.usedMinutes / Math.max(1, second.employee.maxWeeklyMinutes)
+        || first.employeeScarcity - second.employeeScarcity
+        || first.interval.startAt.getTime() - second.interval.startAt.getTime()
+        || first.cost.totalCostCents - second.cost.totalCostCents
+        || first.employee.id - second.employee.id;
+    }
+    return first.interval.startAt.getTime() - second.interval.startAt.getTime()
+      || first.cost.overtimeMinutes - second.cost.overtimeMinutes
+      || first.employeeScarcity - second.employeeScarcity
+      || first.cost.totalCostCents - second.cost.totalCostCents
+      || first.employee.id - second.employee.id;
+  });
 }
 
-function variantVector(variant: PackageVariant) {
-  const overtime = variant.state.assignments.reduce(
-    (total, assignment) => total + assignment.overtimeMinutes,
-    0,
-  );
-  const cost = variant.state.assignments.reduce(
-    (total, assignment) => total + assignment.plannedCostCents,
-    0,
-  );
-  return [variant.remaining, overtime, cost];
+function variantVector(variant: PackageVariant, input: PortfolioOptimizerInput) {
+  return [
+    variant.remaining,
+    ...objectiveVector({
+      assignments: variant.state.assignments,
+      unplannedWorkPackages: variant.state.unplannedWorkPackages,
+    }, input),
+  ];
 }
 
 function placementSignature(state: PlacementState) {
@@ -396,7 +427,7 @@ function schedulePackageVariants(
     }
     if (stats.searchLimitReached) break;
     expanded.sort((first, second) =>
-      compareVectors(variantVector(first), variantVector(second))
+      compareVectors(variantVector(first, input), variantVector(second, input))
       || compareSignatures(
         placementSignature(first.state),
         placementSignature(second.state),
@@ -470,11 +501,13 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
   const greedyMetrics = v1.optimizerDiagnostics.greedyBaseline;
   const v1Metrics = resultMetrics(v1);
   const optimizedMetrics = resultMetrics(best);
+  const components = objectiveComponents(best, input);
   return {
     ...best,
     optimizerDiagnostics: {
       algorithmVersion: "portfolio-beam-v2",
       strategy: "PLACEMENT_AWARE_BOUNDED_BEAM_SEARCH",
+      planningProfile: input.planningProfile ?? "BALANCED",
       beamWidth: PLACEMENT_BEAM_WIDTH,
       packageVariantWidth: PACKAGE_VARIANT_WIDTH,
       branchWidth: PLACEMENT_BRANCH_WIDTH,
@@ -484,16 +517,7 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
       evaluatedPlans,
       searchLimitReached: orderSearch.searchLimitReached || stats.searchLimitReached,
       runtimeMs: Date.now() - startedAt,
-      objectiveVector: {
-        criticalUnplannedMinutes: bestVector[0],
-        highUnplannedMinutes: bestVector[1],
-        normalUnplannedMinutes: bestVector[2],
-        lowUnplannedMinutes: bestVector[3],
-        deadlineExposureMinutes: bestVector[4],
-        overtimeMinutes: bestVector[5],
-        laborCostCents: bestVector[6],
-        imbalanceBasisPoints: bestVector[7],
-      },
+      objectiveVector: components,
       greedyBaseline: greedyMetrics,
       v1Baseline: v1Metrics,
       optimized: optimizedMetrics,
