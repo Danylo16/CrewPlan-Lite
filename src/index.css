@@ -1092,6 +1092,14 @@ textarea {
 .optimizer-comparison > div:first-child { border-top: 0; }
 .optimizer-comparison .optimizer-comparison-header { color: #788397; background: #f4f6f9; font-size: 9px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
 .optimizer-comparison > div b { color: #3449bd; }
+.optimizer-verdict { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 12px; padding: 11px 13px; border: 1px solid; border-radius: 9px; }
+.optimizer-verdict strong,
+.optimizer-verdict span { display: block; }
+.optimizer-verdict span { color: #697386; font-size: 10px; text-align: right; }
+.optimizer-verdict-neutral { border-color: #dfe4ec; background: #f8fafc; }
+.optimizer-verdict-neutral strong { color: #53627a; }
+.optimizer-verdict-gain { border-color: #bbf7d0; background: #f0fdf4; }
+.optimizer-verdict-gain strong { color: #166534; }
 .optimizer-facts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 9px; margin-top: 12px; }
 .optimizer-facts > div { padding: 11px 12px; border: 1px solid #e1e6ee; border-radius: 9px; background: rgb(255 255 255 / 70%); }
 .optimizer-facts span,
@@ -1112,9 +1120,15 @@ textarea {
 .planner-week-heading h3 { margin: 4px 0 0; font-size: 17px; }
 .planner-week-heading > strong { font-size: 20px; }
 .planner-week-heading .utilization-hot { color: #c2410c; }
+.week-utilization { text-align: right; }
+.week-utilization span,
+.week-utilization strong { display: block; }
+.week-utilization strong { margin-top: 3px; font-size: 20px; }
 .utilization-track { overflow: hidden; height: 8px; margin: 14px 0 9px; border-radius: 999px; background: #e9edf4; }
 .utilization-track span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #5267df, #7c8cff); }
-.week-capacity { display: flex; flex-wrap: wrap; gap: 10px; color: #697386; font-size: 11px; }
+.week-capacity { display: flex; flex-wrap: wrap; gap: 6px 12px; color: #697386; font-size: 10px; }
+.week-capacity span:first-child,
+.week-capacity span:nth-child(2) { color: #394258; }
 .week-assignments { display: grid; gap: 8px; margin-top: 16px; }
 .week-assignments > p { color: #8a93a3; font-size: 12px; }
 .week-assignments > div { display: grid; grid-template-columns: 4px 1fr auto; gap: 10px; align-items: center; padding: 9px; border: 1px solid #edf0f4; border-radius: 8px; }
@@ -1154,6 +1168,8 @@ textarea {
   .optimizer-facts { grid-template-columns: 1fr 1fr; }
   .optimizer-comparison { overflow-x: auto; }
   .optimizer-comparison > div { min-width: 560px; }
+  .optimizer-verdict { align-items: flex-start; flex-direction: column; }
+  .optimizer-verdict span { text-align: left; }
   .planner-warnings > div { grid-template-columns: 1fr; }
   .planner-actions { align-items: stretch; flex-direction: column; }
   .planner-actions button { width: 100%; }

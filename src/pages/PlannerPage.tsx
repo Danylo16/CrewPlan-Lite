@@ -31,6 +31,18 @@ function strategyLabel(value: string) {
   return value.toLowerCase().replaceAll("_", " ");
 }
 
+function gainHours(minutes: number, suffix = "") {
+  return minutes === 0 ? "—" : `${hours(minutes)}${suffix ? ` ${suffix}` : ""}`;
+}
+
+function costOutcome(greedyCents: number, optimizedCents: number) {
+  const difference = optimizedCents - greedyCents;
+  if (difference === 0) return "—";
+  return difference < 0
+    ? `${money(Math.abs(difference))} lower`
+    : `${money(difference)} additional`;
+}
+
 function weekOf(value: string) {
   const date = new Date(value);
   const local = new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -78,6 +90,15 @@ export function PlannerPage() {
       groups.set(key, group);
     }
     return [...groups.values()];
+  }, [preview]);
+
+  const optimizerGain = useMemo(() => {
+    if (!preview) return false;
+    const { greedyBaseline, optimized } = preview.optimizerDiagnostics;
+    return optimized.plannedMinutes > greedyBaseline.plannedMinutes
+      || optimized.unplannedMinutes < greedyBaseline.unplannedMinutes
+      || optimized.overtimeMinutes < greedyBaseline.overtimeMinutes
+      || optimized.laborCostCents < greedyBaseline.laborCostCents;
   }, [preview]);
 
   async function generate() {
@@ -188,12 +209,14 @@ export function PlannerPage() {
         </div>
 
         <div className="optimizer-comparison">
-          <div className="optimizer-comparison-header"><span>Objective</span><span>Greedy</span><span>Optimized</span><span>Gain</span></div>
-          <div><strong>Planned work</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.plannedMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.plannedMinutes)}</span><b>{hours(preview.optimizerDiagnostics.optimized.plannedMinutes - preview.optimizerDiagnostics.greedyBaseline.plannedMinutes)}</b></div>
-          <div><strong>Unplanned work</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.unplannedMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.unplannedMinutes)}</span><b>{hours(preview.optimizerDiagnostics.greedyBaseline.unplannedMinutes - preview.optimizerDiagnostics.optimized.unplannedMinutes)} reduced</b></div>
-          <div><strong>Overtime</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.overtimeMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.overtimeMinutes)}</span><b>{hours(preview.optimizerDiagnostics.greedyBaseline.overtimeMinutes - preview.optimizerDiagnostics.optimized.overtimeMinutes)} reduced</b></div>
-          <div><strong>Labor cost</strong><span>{money(preview.optimizerDiagnostics.greedyBaseline.laborCostCents)}</span><span>{money(preview.optimizerDiagnostics.optimized.laborCostCents)}</span><b>{money(preview.optimizerDiagnostics.greedyBaseline.laborCostCents - preview.optimizerDiagnostics.optimized.laborCostCents)} saved</b></div>
+          <div className="optimizer-comparison-header"><span>Objective</span><span>Greedy</span><span>Optimized</span><span>Outcome</span></div>
+          <div><strong>Planned work</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.plannedMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.plannedMinutes)}</span><b>{gainHours(preview.optimizerDiagnostics.optimized.plannedMinutes - preview.optimizerDiagnostics.greedyBaseline.plannedMinutes)}</b></div>
+          <div><strong>Unplanned work</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.unplannedMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.unplannedMinutes)}</span><b>{gainHours(preview.optimizerDiagnostics.greedyBaseline.unplannedMinutes - preview.optimizerDiagnostics.optimized.unplannedMinutes, "reduced")}</b></div>
+          <div><strong>Overtime</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.overtimeMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.overtimeMinutes)}</span><b>{gainHours(preview.optimizerDiagnostics.greedyBaseline.overtimeMinutes - preview.optimizerDiagnostics.optimized.overtimeMinutes, "reduced")}</b></div>
+          <div><strong>Labor cost</strong><span>{money(preview.optimizerDiagnostics.greedyBaseline.laborCostCents)}</span><span>{money(preview.optimizerDiagnostics.optimized.laborCostCents)}</span><b>{costOutcome(preview.optimizerDiagnostics.greedyBaseline.laborCostCents, preview.optimizerDiagnostics.optimized.laborCostCents)}</b></div>
         </div>
+
+        <div className={`optimizer-verdict ${optimizerGain ? "optimizer-verdict-gain" : "optimizer-verdict-neutral"}`}><strong>{optimizerGain ? "The optimizer improved this portfolio input." : "Greedy already found an optimal plan for this input."}</strong><span>{optimizerGain ? "The gains above are measured against the same Work Package scope and constraints." : "No additional coverage, overtime reduction or cost saving was available in this scenario."}</span></div>
 
         <div className="optimizer-facts">
           <div><span>Runtime</span><strong>{preview.optimizerDiagnostics.runtimeMs} ms</strong></div>
@@ -208,9 +231,9 @@ export function PlannerPage() {
         {preview.weekSummaries.map((week) => {
           const weekAssignments = assignmentsByWeek.get(week.weekStart) ?? [];
           return <article className="panel planner-week" key={week.weekStart}>
-            <div className="planner-week-heading"><div><span>Week of</span><h3>{new Date(`${week.weekStart}T12:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}</h3></div><strong className={week.utilizationPercent > 90 ? "utilization-hot" : ""}>{week.utilizationPercent}%</strong></div>
+            <div className="planner-week-heading"><div><span>Week of</span><h3>{new Date(`${week.weekStart}T12:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}</h3></div><div className="week-utilization"><span>Capacity utilization</span><strong className={week.utilizationPercent > 90 ? "utilization-hot" : ""}>{week.utilizationPercent}%</strong></div></div>
             <div className="utilization-track"><span style={{ width: `${Math.min(100, week.utilizationPercent)}%` }} /></div>
-            <div className="week-capacity"><span>{hours(week.committedMinutes)} committed</span><span>{hours(week.proposedMinutes)} proposed</span><span>{money(week.plannedCostCents)}</span></div>
+            <div className="week-capacity"><span><strong>{hours(week.committedMinutes + week.proposedMinutes)}</strong> of {hours(week.capacityMinutes)} allocated</span><span><strong>{hours(Math.max(0, week.capacityMinutes - week.committedMinutes - week.proposedMinutes))}</strong> available</span><span>{hours(week.committedMinutes)} commitments + {hours(week.proposedMinutes)} portfolio work</span><span>{money(week.plannedCostCents)}</span></div>
             <div className="week-assignments">{weekAssignments.length === 0 ? <p>No project work proposed.</p> : weekAssignments.map((assignment, index) => <div key={`${assignment.workPackageId}-${assignment.employeeId}-${assignment.startAt}-${index}`}><span className="assignment-color" /><div><strong>{assignment.workPackageName}</strong><small>{assignment.projectName} · {assignment.employeeName}</small></div><time>{new Date(assignment.startAt).toLocaleDateString(undefined, { weekday: "short" })} {new Date(assignment.startAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}–{new Date(assignment.endAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div>)}</div>
           </article>;
         })}
