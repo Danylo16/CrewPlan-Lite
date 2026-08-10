@@ -108,6 +108,58 @@ describe("multi-week portfolio planner", () => {
     expect(preview.metrics.plannedCostCents).toBe(48_000);
   });
 
+  it("preserves scarce multi-skilled capacity with bounded beam search", async () => {
+    const reactPackage = workPackage({
+      id: 10,
+      name: "React delivery",
+      requiredSkillId: 1,
+      sortOrder: 0,
+    });
+    const devOpsPackage = workPackage({
+      id: 11,
+      name: "DevOps delivery",
+      requiredSkillId: 2,
+      sortOrder: 1,
+    });
+    const preview = await buildPortfolioPlanPreview(database(
+      [project([reactPackage, devOpsPackage])],
+      [],
+      [
+        employee({
+          id: 1,
+          name: "Anna multi-skilled",
+          preferredWeeklyMinutes: 480,
+          maxWeeklyMinutes: 480,
+          skills: [
+            { employeeId: 1, skillId: 1, level: 5 },
+            { employeeId: 1, skillId: 2, level: 5 },
+          ],
+        }),
+        employee({
+          id: 2,
+          name: "Marko React-only",
+          preferredWeeklyMinutes: 480,
+          maxWeeklyMinutes: 480,
+          skills: [{ employeeId: 2, skillId: 1, level: 5 }],
+        }),
+      ],
+    ), {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 1,
+      replaceGenerated: true,
+    });
+
+    expect(preview.metrics.proposedWorkMinutes).toBe(960);
+    expect(preview.unplannedWorkPackages).toEqual([]);
+    expect(preview.assignments.find((item) => item.workPackageId === 10)?.employeeId).toBe(2);
+    expect(preview.assignments.find((item) => item.workPackageId === 11)?.employeeId).toBe(1);
+    expect(preview.optimizerDiagnostics.strategy).toBe("BOUNDED_BEAM_SEARCH");
+    expect(preview.optimizerDiagnostics.greedyBaseline.plannedMinutes).toBe(480);
+    expect(preview.optimizerDiagnostics.optimized.plannedMinutes).toBe(960);
+    expect(preview.optimizerDiagnostics.improvement.plannedMinutes).toBe(480);
+    expect(preview.optimizerDiagnostics.exploredStates).toBeGreaterThan(0);
+  });
+
   it("selects lower regular labor cost when coverage is equivalent", async () => {
     const preview = await buildPortfolioPlanPreview(database(
       [project(undefined, { optimizationStrategy: "MINIMIZE_COST" })],

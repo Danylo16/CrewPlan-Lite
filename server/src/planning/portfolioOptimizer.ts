@@ -4,6 +4,8 @@ import { SCHEDULE_TIME_ZONE } from "../scheduling/timeAdapter.js";
 
 const MAX_ASSIGNMENTS = 4_000;
 const MAX_BLOCK_MINUTES = 480;
+const BEAM_WIDTH = 32;
+const MAX_EXPLORED_STATES = 50_000;
 
 export interface Interval {
   startAt: Date;
@@ -24,7 +26,7 @@ export interface PlanAssignment extends Interval {
   plannedCostCents: number;
 }
 
-interface OptimizerEmployee {
+export interface OptimizerEmployee {
   id: number;
   name: string;
   hourlyCostCents: number;
@@ -35,13 +37,13 @@ interface OptimizerEmployee {
   availability: Array<{ dayOfWeek: string; startMinute: number; endMinute: number }>;
 }
 
-interface OptimizerDependency {
+export interface OptimizerDependency {
   predecessorId: number;
   lagMinutes: number;
   predecessor: { status: string; name: string };
 }
 
-interface OptimizerWorkPackage {
+export interface OptimizerWorkPackage {
   id: number;
   name: string;
   remainingMinutes: number;
@@ -50,10 +52,11 @@ interface OptimizerWorkPackage {
   maxParallelEmployees: number;
   sortOrder: number;
   earliestStartDate: Date | null;
+  targetEndDate: Date | null;
   incomingDependencies: OptimizerDependency[];
 }
 
-interface OptimizerProject {
+export interface OptimizerProject {
   id: number;
   name: string;
   priority: string;
@@ -64,7 +67,7 @@ interface OptimizerProject {
   workPackages: OptimizerWorkPackage[];
 }
 
-interface PortfolioOptimizerInput {
+export interface PortfolioOptimizerInput {
   start: DateTime;
   end: DateTime;
   employees: OptimizerEmployee[];
@@ -139,7 +142,10 @@ function orderedWorkPackages(projects: OptimizerProject[]) {
   return ordered;
 }
 
-export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
+function allocatePortfolioWorkGreedy(
+  input: PortfolioOptimizerInput,
+  packageOrder?: ReturnType<typeof orderedWorkPackages>,
+) {
   const {
     start,
     end,
@@ -167,7 +173,7 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
   const packageFinish = new Map<number, Date>();
   const unplannedWorkPackages: UnplannedWorkPackage[] = [];
 
-  for (const { project, workPackage } of orderedWorkPackages(projects)) {
+  for (const { project, workPackage } of packageOrder ?? orderedWorkPackages(projects)) {
     let remaining = Math.max(
       0,
       workPackage.remainingMinutes - (futurePlannedByPackage.get(workPackage.id) ?? 0),
@@ -320,10 +326,10 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
           projectName: project.name,
           workPackageId: workPackage.id,
           workPackageName: workPackage.name,
-          regularMinutes: 0,
-          overtimeMinutes: 0,
-          regularCostCents: 0,
-          overtimeCostCents: 0,
+          regularMinutes: cost.regularMinutes,
+          overtimeMinutes: cost.overtimeMinutes,
+          regularCostCents: cost.regularCostCents,
+          overtimeCostCents: cost.overtimeCostCents,
           plannedCostCents: cost.totalCostCents,
         };
         assignments.push(assignment);
@@ -354,4 +360,248 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
   }
 
   return { assignments, unplannedWorkPackages };
+}
+
+type PackageEntry = ReturnType<typeof orderedWorkPackages>[number];
+
+interface OrderState {
+  ordered: PackageEntry[];
+  pending: PackageEntry[];
+  orderedIds: Set<number>;
+}
+
+function qualifiedEmployeeCount(entry: PackageEntry, employees: OptimizerEmployee[]) {
+  return employees.filter((employee) => employee.skills.some(
+    (skill) => skill.skillId === entry.workPackage.requiredSkillId
+      && skill.level >= entry.workPackage.minimumSkillLevel,
+  )).length;
+}
+
+function orderHeuristic(state: OrderState, employees: OptimizerEmployee[]) {
+  return state.ordered.reduce((score, entry, index) => {
+    const positionWeight = state.ordered.length - index;
+    const deadline = entry.workPackage.targetEndDate ?? entry.project.targetEndDate;
+    const deadlineDay = deadline === null
+      ? 1_000_000
+      : Math.floor(deadline.getTime() / 86_400_000);
+    const scarcity = qualifiedEmployeeCount(entry, employees);
+    const itemScore = priorityRank(entry.project.priority) * 1_000_000_000
+      + Math.min(1_000, scarcity) * 1_000_000
+      + Math.min(999_999, deadlineDay);
+    return score + itemScore * positionWeight;
+  }, 0);
+}
+
+function compareOrderStates(
+  first: OrderState,
+  second: OrderState,
+  employees: OptimizerEmployee[],
+) {
+  const firstSignature = first.ordered.map((item) => item.workPackage.id).join(",");
+  const secondSignature = second.ordered.map((item) => item.workPackage.id).join(",");
+  return orderHeuristic(first, employees) - orderHeuristic(second, employees)
+    || (firstSignature < secondSignature ? -1 : firstSignature > secondSignature ? 1 : 0);
+}
+
+function readyEntries(state: OrderState) {
+  const ready = state.pending.filter(({ workPackage }) =>
+    workPackage.incomingDependencies.every(
+      (dependency) => dependency.predecessor.status === "COMPLETED"
+        || state.orderedIds.has(dependency.predecessorId),
+    ));
+  return ready.length > 0 ? ready : state.pending;
+}
+
+function objectiveVector(
+  result: ReturnType<typeof allocatePortfolioWorkGreedy>,
+  input: PortfolioOptimizerInput,
+) {
+  const projectById = new Map(input.projects.map((project) => [project.id, project]));
+  const workPackageById = new Map(
+    input.projects.flatMap((project) => project.workPackages.map((workPackage) => [
+      workPackage.id,
+      { project, workPackage },
+    ] as const)),
+  );
+  const unplannedByPriority = [0, 0, 0, 0];
+  for (const item of result.unplannedWorkPackages) {
+    const project = projectById.get(item.projectId);
+    unplannedByPriority[priorityRank(project?.priority ?? "NORMAL")]! += item.unplannedMinutes;
+  }
+
+  let deadlineExposureMinutes = 0;
+  for (const assignment of result.assignments) {
+    const entry = workPackageById.get(assignment.workPackageId);
+    if (!entry) continue;
+    const deadline = entry.workPackage.targetEndDate ?? entry.project.targetEndDate;
+    if (deadline === null) continue;
+    const deadlineEnd = DateTime.fromJSDate(deadline, { zone: "utc" })
+      .setZone(SCHEDULE_TIME_ZONE).endOf("day").toUTC().toJSDate();
+    if (assignment.endAt > deadlineEnd) {
+      deadlineExposureMinutes += Math.round(
+        (assignment.endAt.getTime() - assignment.startAt.getTime()) / 60_000,
+      );
+    }
+  }
+
+  const overtimeMinutes = result.assignments.reduce(
+    (total, assignment) => total + assignment.overtimeMinutes,
+    0,
+  );
+  const plannedCostCents = result.assignments.reduce(
+    (total, assignment) => total + assignment.plannedCostCents,
+    0,
+  );
+  const assignedByEmployee = new Map<number, number>();
+  for (const assignment of result.assignments) {
+    const minutes = Math.round(
+      (assignment.endAt.getTime() - assignment.startAt.getTime()) / 60_000,
+    );
+    assignedByEmployee.set(
+      assignment.employeeId,
+      (assignedByEmployee.get(assignment.employeeId) ?? 0) + minutes,
+    );
+  }
+  const utilization = input.employees.map((employee) =>
+    (assignedByEmployee.get(employee.id) ?? 0) / Math.max(1, employee.preferredWeeklyMinutes),
+  );
+  const imbalanceBasisPoints = utilization.length === 0
+    ? 0
+    : Math.round((Math.max(...utilization) - Math.min(...utilization)) * 10_000);
+
+  return [
+    ...unplannedByPriority,
+    deadlineExposureMinutes,
+    overtimeMinutes,
+    plannedCostCents,
+    imbalanceBasisPoints,
+  ];
+}
+
+function compareVectors(first: number[], second: number[]) {
+  for (let index = 0; index < Math.max(first.length, second.length); index += 1) {
+    const difference = (first[index] ?? 0) - (second[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+function resultMetrics(result: ReturnType<typeof allocatePortfolioWorkGreedy>) {
+  const plannedMinutes = result.assignments.reduce(
+    (total, assignment) => total
+      + Math.round((assignment.endAt.getTime() - assignment.startAt.getTime()) / 60_000),
+    0,
+  );
+  return {
+    plannedMinutes,
+    unplannedMinutes: result.unplannedWorkPackages.reduce(
+      (total, item) => total + item.unplannedMinutes,
+      0,
+    ),
+    overtimeMinutes: result.assignments.reduce(
+      (total, assignment) => total + assignment.overtimeMinutes,
+      0,
+    ),
+    laborCostCents: result.assignments.reduce(
+      (total, assignment) => total + assignment.plannedCostCents,
+      0,
+    ),
+  };
+}
+
+export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
+  const startedAt = Date.now();
+  const defaultOrder = orderedWorkPackages(input.projects);
+  const greedyBaseline = allocatePortfolioWorkGreedy(input, defaultOrder);
+  let beam: OrderState[] = [{
+    ordered: [],
+    pending: [...defaultOrder],
+    orderedIds: new Set<number>(),
+  }];
+  const completedOrders: PackageEntry[][] = [];
+  let exploredStates = 0;
+  let prunedStates = 0;
+  let searchLimitReached = false;
+
+  while (beam.length > 0 && beam[0]!.pending.length > 0) {
+    const expanded: OrderState[] = [];
+    for (const state of beam) {
+      for (const next of readyEntries(state)) {
+        if (exploredStates >= MAX_EXPLORED_STATES) {
+          searchLimitReached = true;
+          break;
+        }
+        exploredStates += 1;
+        const nextState: OrderState = {
+          ordered: [...state.ordered, next],
+          pending: state.pending.filter(
+            (item) => item.workPackage.id !== next.workPackage.id,
+          ),
+          orderedIds: new Set([...state.orderedIds, next.workPackage.id]),
+        };
+        if (nextState.pending.length === 0) completedOrders.push(nextState.ordered);
+        else expanded.push(nextState);
+      }
+      if (searchLimitReached) break;
+    }
+    if (searchLimitReached) break;
+    expanded.sort((first, second) => compareOrderStates(first, second, input.employees));
+    prunedStates += Math.max(0, expanded.length - BEAM_WIDTH);
+    beam = expanded.slice(0, BEAM_WIDTH);
+  }
+
+  const uniqueOrders = new Map<string, PackageEntry[]>();
+  for (const order of [defaultOrder, ...completedOrders]) {
+    uniqueOrders.set(order.map((item) => item.workPackage.id).join(","), order);
+  }
+  let best = greedyBaseline;
+  let bestVector = objectiveVector(best, input);
+  let bestSignature = defaultOrder.map((item) => item.workPackage.id).join(",");
+  for (const [signature, order] of uniqueOrders) {
+    if (signature === bestSignature) continue;
+    const candidate = allocatePortfolioWorkGreedy(input, order);
+    const vector = objectiveVector(candidate, input);
+    if (
+      compareVectors(vector, bestVector) < 0
+      || (compareVectors(vector, bestVector) === 0 && signature < bestSignature)
+    ) {
+      best = candidate;
+      bestVector = vector;
+      bestSignature = signature;
+    }
+  }
+
+  const baselineMetrics = resultMetrics(greedyBaseline);
+  const optimizedMetrics = resultMetrics(best);
+  return {
+    ...best,
+    optimizerDiagnostics: {
+      algorithmVersion: "portfolio-beam-v1",
+      strategy: "BOUNDED_BEAM_SEARCH",
+      beamWidth: BEAM_WIDTH,
+      exploredStates,
+      prunedStates,
+      evaluatedPlans: uniqueOrders.size,
+      searchLimitReached,
+      runtimeMs: Date.now() - startedAt,
+      objectiveVector: {
+        criticalUnplannedMinutes: bestVector[0],
+        highUnplannedMinutes: bestVector[1],
+        normalUnplannedMinutes: bestVector[2],
+        lowUnplannedMinutes: bestVector[3],
+        deadlineExposureMinutes: bestVector[4],
+        overtimeMinutes: bestVector[5],
+        laborCostCents: bestVector[6],
+        imbalanceBasisPoints: bestVector[7],
+      },
+      greedyBaseline: baselineMetrics,
+      optimized: optimizedMetrics,
+      improvement: {
+        plannedMinutes: optimizedMetrics.plannedMinutes - baselineMetrics.plannedMinutes,
+        unplannedMinutes: baselineMetrics.unplannedMinutes - optimizedMetrics.unplannedMinutes,
+        overtimeMinutes: baselineMetrics.overtimeMinutes - optimizedMetrics.overtimeMinutes,
+        laborCostCents: baselineMetrics.laborCostCents - optimizedMetrics.laborCostCents,
+      },
+    },
+  };
 }

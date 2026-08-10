@@ -152,7 +152,7 @@ export async function buildPortfolioPlanPreview(
     ]);
   }
 
-  const { assignments, unplannedWorkPackages } = allocatePortfolioWork({
+  const { assignments, unplannedWorkPackages, optimizerDiagnostics } = allocatePortfolioWork({
     start,
     end,
     employees,
@@ -386,6 +386,7 @@ export async function buildPortfolioPlanPreview(
     unplannedWorkPackages,
     weekSummaries,
     projectCostSummaries,
+    optimizerDiagnostics,
     warnings,
     metrics: {
       proposedWorkMinutes: assignments.reduce((total, item) => total + Math.round((item.endAt.getTime() - item.startAt.getTime()) / 60_000), 0),
