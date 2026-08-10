@@ -122,6 +122,7 @@ export async function buildSchedulePreview(
   database: ScheduleDatabase,
   weekStartValue: string,
   replaceExisting: boolean,
+  excludedEmployeeIds: readonly number[] = [],
 ) {
   const weekStart = parseWeekStart(weekStartValue);
   const weekWindow = getWeekWindowUtc(weekStart);
@@ -132,7 +133,12 @@ export async function buildSchedulePreview(
 
   const [employees, requirements, shifts] = await Promise.all([
     database.employee.findMany({
-      where: { archivedAt: null },
+      where: {
+        archivedAt: null,
+        ...(excludedEmployeeIds.length > 0
+          ? { id: { notIn: [...excludedEmployeeIds] } }
+          : {}),
+      },
       take: MAX_EMPLOYEES + 1,
       include: {
         skills: true,

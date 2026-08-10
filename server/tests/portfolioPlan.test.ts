@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildPortfolioPlanPreview } from "../src/planning/portfolioPlan.js";
+import { buildPortfolioResilienceReport } from "../src/planning/portfolioResilience.js";
 
 const mondayToFriday = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"].map((dayOfWeek, id) => ({
   id: id + 1,
@@ -80,7 +81,10 @@ function database(
   employees = [employee()],
 ) {
   return {
-    employee: { findMany: vi.fn().mockResolvedValue(employees) },
+    employee: { findMany: vi.fn().mockImplementation(({ where }) => {
+      const excluded = new Set<number>(where?.id?.notIn ?? []);
+      return Promise.resolve(employees.filter((item) => !excluded.has(item.id)));
+    }) },
     projectRequirement: { findMany: vi.fn().mockResolvedValue([]) },
     project: { findMany: vi.fn().mockResolvedValue(projects) },
     shift: {
@@ -94,6 +98,71 @@ function database(
 }
 
 describe("multi-week portfolio planner", () => {
+  it("fully recovers a scheduled employee absence when an equivalent replacement exists", async () => {
+    const planningDatabase = database(
+      [project()],
+      [],
+      [
+        employee({ id: 1, name: "Primary", hourlyCostCents: 4_000 }),
+        employee({ id: 2, name: "Replacement", hourlyCostCents: 5_000 }),
+      ],
+    );
+    const options = {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 1,
+      replaceGenerated: true,
+    };
+    const preview = await buildPortfolioPlanPreview(planningDatabase, options);
+    const report = await buildPortfolioResilienceReport(planningDatabase, {
+      ...options,
+      previewId: preview.previewId,
+      inputVersion: preview.inputVersion,
+    });
+
+    expect(report).toMatchObject({
+      scorePercent: 100,
+      worstCaseCoveragePercent: 100,
+      testedAbsences: 1,
+      recoverableAbsences: 1,
+      employeesWithNoFullReplacement: [],
+    });
+    expect(report.scenarios[0]).toMatchObject({
+      employeeName: "Primary",
+      lostMinutes: 0,
+      recoverable: true,
+      additionalCostCents: 8_000,
+    });
+  });
+
+  it("identifies a scheduled employee with no replacement", async () => {
+    const planningDatabase = database([project()]);
+    const options = {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 1,
+      replaceGenerated: true,
+    };
+    const preview = await buildPortfolioPlanPreview(planningDatabase, options);
+    const report = await buildPortfolioResilienceReport(planningDatabase, {
+      ...options,
+      previewId: preview.previewId,
+      inputVersion: preview.inputVersion,
+    });
+
+    expect(report).toMatchObject({
+      scorePercent: 0,
+      worstCaseCoveragePercent: 0,
+      testedAbsences: 1,
+      recoverableAbsences: 0,
+      worstCaseEmployee: "Anna",
+      employeesWithNoFullReplacement: ["Anna"],
+    });
+    expect(report.scenarios[0]).toMatchObject({
+      affectedMinutes: 480,
+      lostMinutes: 480,
+      recoverable: false,
+    });
+  });
+
   it("allocates remaining scope without changing actual progress", async () => {
     const preview = await buildPortfolioPlanPreview(database([project()]), {
       horizonStart: "2026-08-10",

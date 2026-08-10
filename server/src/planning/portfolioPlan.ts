@@ -10,7 +10,7 @@ import type { Interval } from "./portfolioOptimizer.js";
 const MAX_HORIZON_WEEKS = 12;
 const MAX_WORK_PACKAGES = 150;
 
-type PlanningDatabase = Pick<
+export type PlanningDatabase = Pick<
   Prisma.TransactionClient,
   "employee" | "project" | "projectRequirement" | "shift"
 >;
@@ -19,6 +19,7 @@ export interface PortfolioPlanOptions {
   horizonStart: string;
   horizonWeeks: number;
   replaceGenerated: boolean;
+  excludedEmployeeIds?: number[];
 }
 
 interface CostedInterval extends Interval {
@@ -84,12 +85,18 @@ export async function buildPortfolioPlanPreview(
       database,
       start.plus({ weeks: index }).toISODate()!,
       options.replaceGenerated,
+      options.excludedEmployeeIds ?? [],
     )),
   );
 
   const [employees, projects, horizonShifts, futureWorkPackageShifts] = await Promise.all([
     database.employee.findMany({
-      where: { archivedAt: null },
+      where: {
+        archivedAt: null,
+        ...(options.excludedEmployeeIds?.length
+          ? { id: { notIn: options.excludedEmployeeIds } }
+          : {}),
+      },
       include: { skills: true, availability: true },
       orderBy: { id: "asc" },
     }),
@@ -121,6 +128,10 @@ export async function buildPortfolioPlanPreview(
   const preservedHorizonShifts = options.replaceGenerated
     ? horizonShifts.filter((shift) => shift.origin !== "SOLVER")
     : horizonShifts;
+  const availableEmployeeIds = new Set(employees.map((employee) => employee.id));
+  const availablePreservedHorizonShifts = preservedHorizonShifts.filter(
+    (shift) => availableEmployeeIds.has(shift.employeeId),
+  );
   const proposedFixed = fixedPreviews.flatMap((preview) => preview.assignments.map((assignment) => ({
     employeeId: assignment.employeeId,
     projectId: assignment.projectId,
@@ -156,7 +167,7 @@ export async function buildPortfolioPlanPreview(
     employees,
     projects,
     occupiedIntervals: [
-      ...preservedHorizonShifts.map((shift) => ({
+      ...availablePreservedHorizonShifts.map((shift) => ({
         employeeId: shift.employeeId,
         startAt: shift.startAt,
         endAt: shift.endAt,
@@ -170,7 +181,7 @@ export async function buildPortfolioPlanPreview(
     futurePlannedByPackage,
     futurePlannedIntervalsByPackage,
   });
-  const retainedAllocations: CostedInterval[] = preservedHorizonShifts.map((shift) => ({
+  const retainedAllocations: CostedInterval[] = availablePreservedHorizonShifts.map((shift) => ({
     employeeId: shift.employeeId,
     projectId: shift.projectId,
     startAt: shift.startAt,
@@ -219,7 +230,7 @@ export async function buildPortfolioPlanPreview(
     const weekStart = start.plus({ weeks: index });
     const key = weekStart.toISODate()!;
     const proposed = assignments.filter((item) => weekKey(item.startAt) === key);
-    const committedMinutes = preservedHorizonShifts.filter((item) => weekKey(item.startAt) === key)
+    const committedMinutes = availablePreservedHorizonShifts.filter((item) => weekKey(item.startAt) === key)
       .reduce((total, item) => total + Math.round((item.endAt.getTime() - item.startAt.getTime()) / 60_000), 0);
     const fixedMinutes = proposedFixed.filter((item) => weekKey(item.startAt) === key)
       .reduce((total, item) => total + Math.round((item.endAt.getTime() - item.startAt.getTime()) / 60_000), 0);
@@ -371,6 +382,49 @@ export async function buildPortfolioPlanPreview(
     ...proposedFixed,
     ...assignments,
   ]);
+  const fixedCoverageRequestedPositions = fixedPreviews.reduce(
+    (total, preview) => total + preview.metrics.requestedPositions,
+    0,
+  );
+  const fixedCoverageAssignedPositions = fixedPreviews.reduce(
+    (total, preview) => total + preview.metrics.assignedPositions,
+    0,
+  );
+  const unfilledCriticalFixedCoveragePositions = fixedPreviews.reduce(
+    (total, preview) => total + preview.unfilledRequirements.filter(
+      (requirement) => requirement.priority === "CRITICAL",
+    ).length,
+    0,
+  );
+  const projectPriority = new Map(projects.map((project) => [project.id, project.priority]));
+  const criticalUnplannedWorkPackages = unplannedWorkPackages.filter(
+    (workPackage) => projectPriority.get(workPackage.projectId) === "CRITICAL",
+  ).length;
+  const allocationsByEmployee = new Map<number, { minutes: number; allocations: number }>();
+  for (const allocation of [...retainedAllocations, ...proposedFixed, ...assignments]) {
+    const previous = allocationsByEmployee.get(allocation.employeeId) ?? {
+      minutes: 0,
+      allocations: 0,
+    };
+    previous.minutes += Math.round(
+      (allocation.endAt.getTime() - allocation.startAt.getTime()) / 60_000,
+    );
+    previous.allocations += 1;
+    allocationsByEmployee.set(allocation.employeeId, previous);
+  }
+  const resilienceCandidates = employees.flatMap((employee) => {
+    const scheduled = allocationsByEmployee.get(employee.id);
+    return scheduled ? [{
+      employeeId: employee.id,
+      employeeName: employee.name,
+      scheduledMinutes: scheduled.minutes,
+      allocationCount: scheduled.allocations,
+    }] : [];
+  });
+  const allocatedMinutes = weekSummaries.reduce(
+    (total, week) => total + week.committedMinutes + week.proposedMinutes,
+    0,
+  );
   return {
     previewId,
     inputVersion,
@@ -384,6 +438,7 @@ export async function buildPortfolioPlanPreview(
     unplannedWorkPackages,
     weekSummaries,
     projectCostSummaries,
+    resilienceCandidates,
     optimizerDiagnostics,
     warnings,
     metrics: {
@@ -402,6 +457,13 @@ export async function buildPortfolioPlanPreview(
         : Math.round((portfolioCosts.plannedCostCents * 60) / portfolioCosts.minutes),
       assignedWorkPackages: new Set(assignments.map((item) => item.workPackageId)).size,
       unplannedWorkPackages: unplannedWorkPackages.length,
+      allocatedMinutes,
+      fixedCoverageRequestedPositions,
+      fixedCoverageAssignedPositions,
+      unfilledFixedCoveragePositions:
+        fixedCoverageRequestedPositions - fixedCoverageAssignedPositions,
+      unfilledCriticalFixedCoveragePositions,
+      criticalUnplannedWorkPackages,
     },
   };
 }

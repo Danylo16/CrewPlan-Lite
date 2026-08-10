@@ -1114,6 +1114,36 @@ textarea {
 .optimizer-facts strong { margin-top: 4px; font-size: 13px; }
 .optimizer-facts .search-limit { border-color: #fecaca; background: #fef2f2; }
 .optimizer-facts .search-limit strong { color: #b91c1c; }
+.resilience-dashboard { background: linear-gradient(145deg, #fff 0%, #f5fbff 100%); }
+.resilience-intro { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 16px; border: 1px solid #dbeafe; border-radius: 10px; background: #eff6ff; }
+.resilience-intro strong,
+.resilience-intro span { display: block; }
+.resilience-intro strong { color: #1e40af; }
+.resilience-intro span { color: #64748b; font-size: 11px; text-align: right; }
+.resilience-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.resilience-summary > div { padding: 14px; border: 1px solid #dce8ef; border-radius: 10px; background: #f8fbfd; }
+.resilience-summary span,
+.resilience-summary strong,
+.resilience-summary small { display: block; }
+.resilience-summary span { color: #697386; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+.resilience-summary strong { margin: 7px 0 3px; font-size: 22px; }
+.resilience-summary small { color: #7a8496; font-size: 10px; }
+.resilience-summary .resilience-risk { border-color: #fecaca; background: #fef2f2; }
+.resilience-summary .resilience-risk strong { color: #b91c1c; }
+.resilience-verdict { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 12px; padding: 11px 13px; border: 1px solid; border-radius: 9px; }
+.resilience-verdict span { color: #697386; font-size: 10px; }
+.resilience-verdict small { display: block; margin-top: 4px; color: #7a8496; font-size: 10px; }
+.resilience-verdict-safe { border-color: #bbf7d0; background: #f0fdf4; }
+.resilience-verdict-safe strong { color: #166534; }
+.resilience-verdict-risk { border-color: #fecaca; background: #fef2f2; }
+.resilience-verdict-risk strong { color: #b91c1c; }
+.resilience-scenarios { overflow: hidden; margin-top: 12px; border: 1px solid #dfe4ec; border-radius: 10px; background: #fff; }
+.resilience-scenarios > div { display: grid; grid-template-columns: minmax(150px, 1.2fr) minmax(150px, 1.3fr) repeat(4, minmax(90px, .8fr)); gap: 12px; align-items: center; padding: 10px 14px; border-top: 1px solid #edf0f4; font-size: 11px; }
+.resilience-scenarios > div:first-child { border-top: 0; }
+.resilience-scenarios .resilience-scenario-header { color: #788397; background: #f4f6f9; font-size: 9px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.resilience-scenarios b { justify-self: start; padding: 4px 7px; border-radius: 999px; font-size: 9px; }
+.resilience-scenarios .scenario-recovered { color: #166534; background: #dcfce7; }
+.resilience-scenarios .scenario-at-risk { color: #b91c1c; background: #fee2e2; }
 .planner-warnings { display: grid; gap: 8px; margin-bottom: 20px; padding: 16px; border: 1px solid #fde68a; border-radius: 12px; background: #fffbeb; }
 .planner-warnings > strong { color: #854d0e; }
 .planner-warnings > div { display: grid; grid-template-columns: 180px 1fr; gap: 12px; align-items: center; }
@@ -1157,6 +1187,9 @@ textarea {
   .planner-controls { grid-template-columns: 1fr 1fr; }
   .planner-summary { grid-template-columns: repeat(2, 1fr); }
   .cost-breakdown-grid { grid-template-columns: repeat(3, 1fr); }
+  .resilience-summary { grid-template-columns: repeat(2, 1fr); }
+  .resilience-scenarios { overflow-x: auto; }
+  .resilience-scenarios > div { min-width: 900px; }
   .project-budget-list { overflow-x: auto; }
   .project-budget-header,
   .project-budget-main { min-width: 820px; }

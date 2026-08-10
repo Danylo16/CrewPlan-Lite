@@ -288,6 +288,42 @@ export interface PortfolioProjectCostSummary {
   weeks: PortfolioProjectCostWeek[];
 }
 
+export interface PortfolioResilienceScenario {
+  employeeId: number;
+  employeeName: string;
+  affectedAllocations: number;
+  affectedMinutes: number;
+  recoveredMinutes: number;
+  lostMinutes: number;
+  coveragePercent: number;
+  criticalGapsAtRisk: number;
+  additionalCostCents: number | null;
+  recoverable: boolean;
+  runtimeMs: number;
+}
+
+export interface PortfolioResilienceReport {
+  previewId: string;
+  inputVersion: string;
+  horizonStart: string;
+  horizonEndExclusive: string;
+  horizonWeeks: number;
+  algorithmVersion: string;
+  strategy: string;
+  scorePercent: number;
+  averageCoveragePercent: number;
+  worstCaseCoveragePercent: number;
+  testedAbsences: number;
+  recoverableAbsences: number;
+  criticalGapsAtRisk: number;
+  maxRequiredReassignments: number;
+  employeesWithNoFullReplacement: string[];
+  worstCaseEmployee: string | null;
+  baselineAllocatedMinutes: number;
+  runtimeMs: number;
+  scenarios: PortfolioResilienceScenario[];
+}
+
 export interface PortfolioPlanPreview {
   previewId: string;
   inputVersion: string;
@@ -307,6 +343,12 @@ export interface PortfolioPlanPreview {
   }>;
   weekSummaries: PortfolioPlanWeek[];
   projectCostSummaries: PortfolioProjectCostSummary[];
+  resilienceCandidates: Array<{
+    employeeId: number;
+    employeeName: string;
+    scheduledMinutes: number;
+    allocationCount: number;
+  }>;
   optimizerDiagnostics: PortfolioOptimizerDiagnostics;
   warnings: Array<{ code: string; message: string; projectId?: number; weekStart?: string }>;
   metrics: {
@@ -323,6 +365,12 @@ export interface PortfolioPlanPreview {
     averagePlannedHourlyCostCents: number;
     assignedWorkPackages: number;
     unplannedWorkPackages: number;
+    allocatedMinutes: number;
+    fixedCoverageRequestedPositions: number;
+    fixedCoverageAssignedPositions: number;
+    unfilledFixedCoveragePositions: number;
+    unfilledCriticalFixedCoveragePositions: number;
+    criticalUnplannedWorkPackages: number;
   };
 }
 

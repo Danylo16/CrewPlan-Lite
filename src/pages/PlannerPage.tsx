@@ -1,6 +1,10 @@
 import { useMemo, useState } from "react";
 import { apiRequest } from "../api/client";
-import type { AppliedPortfolioPlan, PortfolioPlanPreview } from "../types";
+import type {
+  AppliedPortfolioPlan,
+  PortfolioPlanPreview,
+  PortfolioResilienceReport,
+} from "../types";
 
 function nextMonday() {
   const date = new Date();
@@ -63,6 +67,8 @@ export function PlannerPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [applied, setApplied] = useState<AppliedPortfolioPlan | null>(null);
+  const [resilience, setResilience] = useState<PortfolioResilienceReport | null>(null);
+  const [isTestingResilience, setIsTestingResilience] = useState(false);
 
   const assignmentsByWeek = useMemo(() => {
     const grouped = new Map<string, PortfolioPlanPreview["assignments"]>();
@@ -105,6 +111,7 @@ export function PlannerPage() {
     setIsGenerating(true);
     setError(null);
     setApplied(null);
+    setResilience(null);
     try {
       setPreview(await apiRequest<PortfolioPlanPreview>("/portfolio-plan/preview", {
         method: "POST",
@@ -115,6 +122,31 @@ export function PlannerPage() {
       setError(generationError instanceof Error ? generationError.message : "Planning failed");
     } finally {
       setIsGenerating(false);
+    }
+  }
+
+  async function testResilience() {
+    if (!preview) return;
+    setIsTestingResilience(true);
+    setError(null);
+    try {
+      setResilience(await apiRequest<PortfolioResilienceReport>("/portfolio-plan/resilience", {
+        method: "POST",
+        body: JSON.stringify({
+          horizonStart: preview.horizonStart,
+          horizonWeeks: preview.horizonWeeks,
+          replaceGenerated: preview.replaceGenerated,
+          previewId: preview.previewId,
+          inputVersion: preview.inputVersion,
+        }),
+      }));
+    } catch (resilienceError) {
+      setResilience(null);
+      setError(resilienceError instanceof Error
+        ? resilienceError.message
+        : "Resilience testing failed");
+    } finally {
+      setIsTestingResilience(false);
     }
   }
 
@@ -225,6 +257,39 @@ export function PlannerPage() {
           <div><span>Plans evaluated</span><strong>{preview.optimizerDiagnostics.evaluatedPlans}</strong></div>
           <div className={preview.optimizerDiagnostics.searchLimitReached ? "search-limit" : ""}><span>Search limit</span><strong>{preview.optimizerDiagnostics.searchLimitReached ? "Reached" : "Not reached"}</strong></div>
         </div>
+      </section>
+
+      <section className="planner-dashboard-section resilience-dashboard">
+        <div className="planner-section-heading">
+          <div><span>Operational risk</span><h3>N−1 schedule resilience</h3><p>Each scenario removes one scheduled employee and rebuilds the same horizon under the same skills, availability, capacity, dependency and deadline constraints.</p></div>
+          <button className="secondary-button" disabled={isTestingResilience || preview.resilienceCandidates.length === 0} type="button" onClick={() => void testResilience()}>{isTestingResilience ? `Testing ${preview.resilienceCandidates.length} absences…` : resilience ? "Run stress test again" : "Run N−1 stress test"}</button>
+        </div>
+
+        {!resilience && <div className="resilience-intro"><strong>This analysis is intentionally separate from planning.</strong><span>It runs {preview.resilienceCandidates.length} additional deterministic plans and does not modify shifts or progress.</span></div>}
+
+        {resilience && <>
+          <div className="resilience-summary">
+            <div className={resilience.recoverableAbsences < resilience.testedAbsences ? "resilience-risk" : ""}><span>Full recovery rate</span><strong>{resilience.recoverableAbsences}/{resilience.testedAbsences}</strong><small>absences recovered without new gaps</small></div>
+            <div><span>Average coverage retained</span><strong>{resilience.scorePercent}%</strong><small>scheduled minutes, not probability</small></div>
+            <div className={resilience.worstCaseCoveragePercent < 100 ? "resilience-risk" : ""}><span>Worst case</span><strong>{resilience.worstCaseCoveragePercent}%</strong><small>{resilience.worstCaseEmployee ?? "No scheduled employees"}</small></div>
+            <div className={resilience.criticalGapsAtRisk > 0 ? "resilience-risk" : ""}><span>Critical coverage gaps</span><strong>{resilience.criticalGapsAtRisk}</strong><small>occurrences in worst scenario</small></div>
+            <div><span>Required reassignments</span><strong>{resilience.maxRequiredReassignments}</strong><small>worst single absence</small></div>
+          </div>
+
+          <div className={`resilience-verdict ${resilience.employeesWithNoFullReplacement.length > 0 ? "resilience-verdict-risk" : "resilience-verdict-safe"}`}><div><strong>{resilience.employeesWithNoFullReplacement.length === 0 ? "Every tested absence is fully recoverable." : `Portfolio is fragile: only ${resilience.recoverableAbsences}/${resilience.testedAbsences} absences fully recover.`}</strong>{resilience.employeesWithNoFullReplacement.length > 0 && <small>No full replacement: {resilience.employeesWithNoFullReplacement.join(", ")}</small>}</div><span>{resilience.algorithmVersion} · {resilience.testedAbsences} replans · {(resilience.runtimeMs / 1000).toFixed(1)}s</span></div>
+
+          <div className="resilience-scenarios">
+            <div className="resilience-scenario-header"><span>Removed employee</span><span>Affected plan</span><span>Coverage retained</span><span>Unrecovered</span><span>Cost change</span><span>Result</span></div>
+            {resilience.scenarios.map((scenario) => <div key={scenario.employeeId}>
+              <strong>{scenario.employeeName}</strong>
+              <span>{scenario.affectedAllocations} allocations · {hours(scenario.affectedMinutes)}</span>
+              <span>{scenario.coveragePercent}%</span>
+              <span>{hours(scenario.lostMinutes)}{scenario.criticalGapsAtRisk > 0 ? ` · ${scenario.criticalGapsAtRisk} critical gaps` : ""}</span>
+              <span>{scenario.additionalCostCents === null ? "Not comparable" : scenario.additionalCostCents === 0 ? "—" : `${scenario.additionalCostCents > 0 ? "+" : "−"}${money(Math.abs(scenario.additionalCostCents))}`}</span>
+              <b className={scenario.recoverable ? "scenario-recovered" : "scenario-at-risk"}>{scenario.recoverable ? "Recovered" : "At risk"}</b>
+            </div>)}
+          </div>
+        </>}
       </section>
 
       <div className="planner-timeline">

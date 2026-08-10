@@ -3,6 +3,7 @@ import { z } from "zod";
 import { Prisma } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 import { buildPortfolioPlanPreview } from "../planning/portfolioPlan.js";
+import { buildPortfolioResilienceReport } from "../planning/portfolioResilience.js";
 import { getWeekWindowUtc, parseWeekStart } from "../scheduling/timeAdapter.js";
 
 export const portfolioPlanRouter = Router();
@@ -14,6 +15,7 @@ const requestSchema = z.object({
   replaceGenerated: z.boolean().default(true),
 });
 const applySchema = requestSchema.extend({ previewId: hashSchema, inputVersion: hashSchema });
+const resilienceSchema = applySchema;
 
 function planningError(error: unknown, response: Parameters<Parameters<typeof portfolioPlanRouter.post>[1]>[1]) {
   const code = error instanceof Error ? error.message : "INTERNAL_SERVER_ERROR";
@@ -22,6 +24,9 @@ function planningError(error: unknown, response: Parameters<Parameters<typeof po
   }
   if (code === "PLANNING_INPUT_TOO_LARGE") {
     return response.status(422).json({ code, message: "Portfolio exceeds the planner limits" });
+  }
+  if (code === "RESILIENCE_INPUT_TOO_LARGE") {
+    return response.status(422).json({ code, message: "Resilience testing supports at most 12 scheduled employees" });
   }
   throw error;
 }
@@ -32,6 +37,19 @@ portfolioPlanRouter.post("/preview", async (request, response) => {
   try {
     return response.json(await buildPortfolioPlanPreview(prisma, result.data));
   } catch (error) {
+    return planningError(error, response);
+  }
+});
+
+portfolioPlanRouter.post("/resilience", async (request, response) => {
+  const result = resilienceSchema.safeParse(request.body);
+  if (!result.success) return response.status(400).json({ code: "VALIDATION_ERROR", message: "Invalid resilience request", errors: result.error.issues });
+  try {
+    return response.json(await buildPortfolioResilienceReport(prisma, result.data));
+  } catch (error) {
+    if (error instanceof Error && error.message === "PORTFOLIO_PREVIEW_STALE") {
+      return response.status(409).json({ code: error.message, message: "Portfolio data changed after preview; generate a new preview" });
+    }
     return planningError(error, response);
   }
 });
