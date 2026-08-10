@@ -35,6 +35,8 @@ const employee = {
   id: 1,
   preferredWeeklyMinutes: 2400,
   maxWeeklyMinutes: 2400,
+  hourlyCostCents: 5_000,
+  overtimeRateBasisPoints: 15_000,
 
   skills: [
     {

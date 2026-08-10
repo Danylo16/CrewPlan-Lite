@@ -14,6 +14,8 @@ function employee(
     id,
     preferredWeeklyMinutes: 2400,
     maxWeeklyMinutes: 2400,
+    hourlyCostCents: 5_000,
+    overtimeRateBasisPoints: 15_000,
     skills: [{ skillId: 1, level: 3 }],
     availability: [{
       dayOfWeek: "MONDAY",
@@ -132,6 +134,48 @@ describe("scheduling engine", () => {
     }));
 
     expect(new Set(result.assignments.map((item) => item.employeeId)).size).toBe(2);
+  });
+
+  it("chooses the lowest labor cost after preserving coverage", () => {
+    const result = generateSchedule(input({
+      employees: [
+        employee(1, { hourlyCostCents: 8_000 }),
+        employee(2, { hourlyCostCents: 4_000 }),
+      ],
+    }));
+
+    expect(result.assignments[0]?.employeeId).toBe(2);
+    expect(result.metrics.laborCostCents).toBe(32_000);
+    expect(result.metrics.overtimeMinutes).toBe(0);
+  });
+
+  it("does not sacrifice critical coverage to reduce labor cost", () => {
+    const result = generateSchedule(input({
+      employees: [employee(1, { hourlyCostCents: 10_000 })],
+      requirements: [
+        requirement(1, { priority: "LOW" }),
+        requirement(2, { priority: "CRITICAL" }),
+      ],
+    }));
+
+    expect(result.assignments[0]?.requirementId).toBe(2);
+    expect(result.unfilledPositions[0]?.priority).toBe("LOW");
+  });
+
+  it("prefers regular capacity over cheaper overtime", () => {
+    const result = generateSchedule(input({
+      employees: [
+        employee(1, {
+          hourlyCostCents: 2_000,
+          preferredWeeklyMinutes: 0,
+          maxWeeklyMinutes: 2_400,
+        }),
+        employee(2, { hourlyCostCents: 8_000 }),
+      ],
+    }));
+
+    expect(result.assignments[0]?.employeeId).toBe(2);
+    expect(result.metrics.overtimeMinutes).toBe(0);
   });
 
   it("returns a stable result for identical input", () => {

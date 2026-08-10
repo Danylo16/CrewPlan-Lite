@@ -181,6 +181,8 @@ export async function buildSchedulePreview(
       id: employee.id,
       preferredWeeklyMinutes: employee.preferredWeeklyMinutes,
       maxWeeklyMinutes: employee.maxWeeklyMinutes,
+      hourlyCostCents: employee.hourlyCostCents,
+      overtimeRateBasisPoints: employee.overtimeRateBasisPoints,
       skills: employee.skills.map((skill) => ({
         skillId: skill.skillId,
         level: skill.level,

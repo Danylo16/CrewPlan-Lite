@@ -9,7 +9,7 @@ const mondayToFriday = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"].
   endMinute: 17 * 60,
 }));
 
-function employee() {
+function employee(overrides: Record<string, unknown> = {}) {
   return {
     id: 1,
     name: "Anna",
@@ -25,6 +25,7 @@ function employee() {
     updatedAt: new Date("2026-08-01T00:00:00.000Z"),
     skills: [{ employeeId: 1, skillId: 1, level: 5 }],
     availability: mondayToFriday,
+    ...overrides,
   };
 }
 
@@ -73,9 +74,13 @@ function project(packages = [workPackage()], overrides: Record<string, unknown> 
   };
 }
 
-function database(projects: ReturnType<typeof project>[], shifts: Array<Record<string, unknown>> = []) {
+function database(
+  projects: ReturnType<typeof project>[],
+  shifts: Array<Record<string, unknown>> = [],
+  employees = [employee()],
+) {
   return {
-    employee: { findMany: vi.fn().mockResolvedValue([employee()]) },
+    employee: { findMany: vi.fn().mockResolvedValue(employees) },
     projectRequirement: { findMany: vi.fn().mockResolvedValue([]) },
     project: { findMany: vi.fn().mockResolvedValue(projects) },
     shift: {
@@ -101,6 +106,100 @@ describe("multi-week portfolio planner", () => {
     expect(preview.assignments.every((item) => item.workPackageId === 10)).toBe(true);
     expect(preview.unplannedWorkPackages).toEqual([]);
     expect(preview.metrics.plannedCostCents).toBe(48_000);
+  });
+
+  it("selects lower regular labor cost when coverage is equivalent", async () => {
+    const preview = await buildPortfolioPlanPreview(database(
+      [project(undefined, { optimizationStrategy: "MINIMIZE_COST" })],
+      [],
+      [
+        employee({ id: 1, name: "Expensive", hourlyCostCents: 8_000 }),
+        employee({ id: 2, name: "Efficient", hourlyCostCents: 4_000 }),
+      ],
+    ), {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 2,
+      replaceGenerated: true,
+    });
+
+    expect(preview.assignments[0]?.employeeId).toBe(2);
+    expect(preview.metrics.workPackageCostCents).toBe(32_000);
+    expect(preview.metrics.overtimeMinutes).toBe(0);
+  });
+
+  it("prefers regular capacity over cheaper overtime", async () => {
+    const preview = await buildPortfolioPlanPreview(database(
+      [project(undefined, { optimizationStrategy: "MINIMIZE_COST" })],
+      [],
+      [
+        employee({
+          id: 1,
+          name: "Cheap overtime",
+          hourlyCostCents: 2_000,
+          preferredWeeklyMinutes: 0,
+        }),
+        employee({ id: 2, name: "Regular capacity", hourlyCostCents: 4_000 }),
+      ],
+    ), {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 2,
+      replaceGenerated: true,
+    });
+
+    expect(preview.assignments[0]?.employeeId).toBe(2);
+    expect(preview.metrics.overtimeMinutes).toBe(0);
+  });
+
+  it("includes retained commitments and exposes signed budget variance", async () => {
+    const retainedAllocation = {
+      id: 102,
+      employeeId: 1,
+      projectId: 1,
+      workPackageId: null,
+      projectRequirementId: null,
+      planningRunId: null,
+      startAt: new Date("2026-08-10T07:00:00.000Z"),
+      endAt: new Date("2026-08-10T11:00:00.000Z"),
+      note: null,
+      kind: "GENERAL",
+      origin: "MANUAL",
+      status: "COMMITTED",
+      plannedCostCents: null,
+      cancelledAt: null,
+      createdAt: new Date("2026-08-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-08-01T00:00:00.000Z"),
+    };
+    const preview = await buildPortfolioPlanPreview(database(
+      [project(undefined, {
+        totalLaborBudgetCents: 100_000,
+        weeklyLaborBudgetCents: 50_000,
+      })],
+      [retainedAllocation],
+      [employee({ preferredWeeklyMinutes: 480 })],
+    ), {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 2,
+      replaceGenerated: true,
+    });
+
+    expect(preview.metrics).toMatchObject({
+      regularMinutes: 480,
+      overtimeMinutes: 240,
+      regularCostCents: 48_000,
+      overtimeCostCents: 36_000,
+      retainedCostCents: 24_000,
+      workPackageCostCents: 60_000,
+      plannedCostCents: 84_000,
+    });
+    expect(preview.projectCostSummaries[0]).toMatchObject({
+      knownCostCents: 84_000,
+      totalBudgetVarianceCents: -16_000,
+      forecastComplete: true,
+    });
+    expect(preview.projectCostSummaries[0]?.weeks[0]).toMatchObject({
+      plannedCostCents: 84_000,
+      weeklyBudgetVarianceCents: 34_000,
+    });
   });
 
   it("topologically schedules a successor after its predecessor", async () => {

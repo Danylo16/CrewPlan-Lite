@@ -13,6 +13,51 @@ export const UNFILLED_PENALTY: Record<RequirementPriority, number> = {
 export const PREFERRED_OVERTIME_PENALTY_PER_MINUTE = 2;
 export const WORKLOAD_IMBALANCE_MINUTES_PER_PENALTY_POINT = 10;
 
+export interface AllocationCostBreakdown {
+  regularMinutes: number;
+  overtimeMinutes: number;
+  regularCostCents: number;
+  overtimeCostCents: number;
+  totalCostCents: number;
+}
+
+export function allocationCostBreakdown(
+  employee: Pick<
+    SchedulingEmployee,
+    | "hourlyCostCents"
+    | "overtimeRateBasisPoints"
+    | "preferredWeeklyMinutes"
+  >,
+  previousMinutes: number,
+  addedMinutes: number,
+): AllocationCostBreakdown {
+  const regularMinutes = Math.max(
+    0,
+    Math.min(
+      addedMinutes,
+      employee.preferredWeeklyMinutes - previousMinutes,
+    ),
+  );
+  const overtimeMinutes = addedMinutes - regularMinutes;
+  const regularCostCents = Math.round(
+    (employee.hourlyCostCents * regularMinutes) / 60,
+  );
+  const overtimeCostCents = Math.round(
+    (employee.hourlyCostCents
+      * overtimeMinutes
+      * employee.overtimeRateBasisPoints)
+      / 600_000,
+  );
+
+  return {
+    regularMinutes,
+    overtimeMinutes,
+    regularCostCents,
+    overtimeCostCents,
+    totalCostCents: regularCostCents + overtimeCostCents,
+  };
+}
+
 export function preferredOvertimePenalty(
   employee: SchedulingEmployee,
   previousMinutes: number,
