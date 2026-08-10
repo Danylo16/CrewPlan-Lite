@@ -269,14 +269,14 @@ export function PlannerPage() {
 
         {resilience && <>
           <div className="resilience-summary">
-            <div><span>Resilience score</span><strong>{resilience.scorePercent}%</strong><small>average retained coverage</small></div>
+            <div className={resilience.recoverableAbsences < resilience.testedAbsences ? "resilience-risk" : ""}><span>Full recovery rate</span><strong>{resilience.recoverableAbsences}/{resilience.testedAbsences}</strong><small>absences recovered without new gaps</small></div>
+            <div><span>Average coverage retained</span><strong>{resilience.scorePercent}%</strong><small>scheduled minutes, not probability</small></div>
             <div className={resilience.worstCaseCoveragePercent < 100 ? "resilience-risk" : ""}><span>Worst case</span><strong>{resilience.worstCaseCoveragePercent}%</strong><small>{resilience.worstCaseEmployee ?? "No scheduled employees"}</small></div>
-            <div><span>Recoverable absences</span><strong>{resilience.recoverableAbsences}/{resilience.testedAbsences}</strong><small>full recovery without new critical gaps</small></div>
-            <div className={resilience.criticalRolesAtRisk > 0 ? "resilience-risk" : ""}><span>Critical roles at risk</span><strong>{resilience.criticalRolesAtRisk}</strong><small>worst single absence</small></div>
+            <div className={resilience.criticalGapsAtRisk > 0 ? "resilience-risk" : ""}><span>Critical coverage gaps</span><strong>{resilience.criticalGapsAtRisk}</strong><small>occurrences in worst scenario</small></div>
             <div><span>Required reassignments</span><strong>{resilience.maxRequiredReassignments}</strong><small>worst single absence</small></div>
           </div>
 
-          <div className={`resilience-verdict ${resilience.employeesWithNoFullReplacement.length > 0 ? "resilience-verdict-risk" : "resilience-verdict-safe"}`}><strong>{resilience.employeesWithNoFullReplacement.length === 0 ? "Every tested absence is fully recoverable." : `No full replacement: ${resilience.employeesWithNoFullReplacement.join(", ")}`}</strong><span>{resilience.algorithmVersion} · {(resilience.runtimeMs / 1000).toFixed(1)}s</span></div>
+          <div className={`resilience-verdict ${resilience.employeesWithNoFullReplacement.length > 0 ? "resilience-verdict-risk" : "resilience-verdict-safe"}`}><div><strong>{resilience.employeesWithNoFullReplacement.length === 0 ? "Every tested absence is fully recoverable." : `Portfolio is fragile: only ${resilience.recoverableAbsences}/${resilience.testedAbsences} absences fully recover.`}</strong>{resilience.employeesWithNoFullReplacement.length > 0 && <small>No full replacement: {resilience.employeesWithNoFullReplacement.join(", ")}</small>}</div><span>{resilience.algorithmVersion} · {resilience.testedAbsences} replans · {(resilience.runtimeMs / 1000).toFixed(1)}s</span></div>
 
           <div className="resilience-scenarios">
             <div className="resilience-scenario-header"><span>Removed employee</span><span>Affected plan</span><span>Coverage retained</span><span>Unrecovered</span><span>Cost change</span><span>Result</span></div>
@@ -284,8 +284,8 @@ export function PlannerPage() {
               <strong>{scenario.employeeName}</strong>
               <span>{scenario.affectedAllocations} allocations · {hours(scenario.affectedMinutes)}</span>
               <span>{scenario.coveragePercent}%</span>
-              <span>{hours(scenario.lostMinutes)}{scenario.criticalRolesAtRisk > 0 ? ` · ${scenario.criticalRolesAtRisk} critical` : ""}</span>
-              <span>{scenario.additionalCostCents === 0 ? "—" : `${scenario.additionalCostCents > 0 ? "+" : "−"}${money(Math.abs(scenario.additionalCostCents))}`}</span>
+              <span>{hours(scenario.lostMinutes)}{scenario.criticalGapsAtRisk > 0 ? ` · ${scenario.criticalGapsAtRisk} critical gaps` : ""}</span>
+              <span>{scenario.additionalCostCents === null ? "Not comparable" : scenario.additionalCostCents === 0 ? "—" : `${scenario.additionalCostCents > 0 ? "+" : "−"}${money(Math.abs(scenario.additionalCostCents))}`}</span>
               <b className={scenario.recoverable ? "scenario-recovered" : "scenario-at-risk"}>{scenario.recoverable ? "Recovered" : "At risk"}</b>
             </div>)}
           </div>

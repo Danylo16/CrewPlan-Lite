@@ -43,7 +43,7 @@ export async function buildPortfolioResilienceReport(
     });
     const allocatedMinutes = Math.min(baselineMinutes, scenario.metrics.allocatedMinutes);
     const lostMinutes = Math.max(0, baselineMinutes - allocatedMinutes);
-    const criticalRolesAtRisk = Math.max(
+    const criticalGapsAtRisk = Math.max(
       0,
       scenario.metrics.unfilledCriticalFixedCoveragePositions
         + scenario.metrics.criticalUnplannedWorkPackages
@@ -61,16 +61,18 @@ export async function buildPortfolioResilienceReport(
       recoveredMinutes: allocatedMinutes,
       lostMinutes,
       coveragePercent,
-      criticalRolesAtRisk,
-      additionalCostCents: scenario.metrics.plannedCostCents - baseline.metrics.plannedCostCents,
-      recoverable: lostMinutes === 0 && criticalRolesAtRisk === 0,
+      criticalGapsAtRisk,
+      additionalCostCents: lostMinutes === 0 && criticalGapsAtRisk === 0
+        ? scenario.metrics.plannedCostCents - baseline.metrics.plannedCostCents
+        : null,
+      recoverable: lostMinutes === 0 && criticalGapsAtRisk === 0,
       runtimeMs: Date.now() - scenarioStartedAt,
     });
   }
 
   scenarios.sort((first, second) =>
     first.coveragePercent - second.coveragePercent
-    || second.criticalRolesAtRisk - first.criticalRolesAtRisk
+    || second.criticalGapsAtRisk - first.criticalGapsAtRisk
     || second.lostMinutes - first.lostMinutes
     || first.employeeId - second.employeeId,
   );
@@ -100,9 +102,9 @@ export async function buildPortfolioResilienceReport(
     worstCaseCoveragePercent,
     testedAbsences,
     recoverableAbsences,
-    criticalRolesAtRisk: Math.max(
+    criticalGapsAtRisk: Math.max(
       0,
-      ...scenarios.map((scenario) => scenario.criticalRolesAtRisk),
+      ...scenarios.map((scenario) => scenario.criticalGapsAtRisk),
     ),
     maxRequiredReassignments: Math.max(
       0,

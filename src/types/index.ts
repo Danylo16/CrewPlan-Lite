@@ -296,8 +296,8 @@ export interface PortfolioResilienceScenario {
   recoveredMinutes: number;
   lostMinutes: number;
   coveragePercent: number;
-  criticalRolesAtRisk: number;
-  additionalCostCents: number;
+  criticalGapsAtRisk: number;
+  additionalCostCents: number | null;
   recoverable: boolean;
   runtimeMs: number;
 }
@@ -315,7 +315,7 @@ export interface PortfolioResilienceReport {
   worstCaseCoveragePercent: number;
   testedAbsences: number;
   recoverableAbsences: number;
-  criticalRolesAtRisk: number;
+  criticalGapsAtRisk: number;
   maxRequiredReassignments: number;
   employeesWithNoFullReplacement: string[];
   worstCaseEmployee: string | null;
