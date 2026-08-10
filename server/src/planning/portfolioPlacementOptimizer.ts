@@ -26,7 +26,6 @@ const MAX_BLOCK_MINUTES = 480;
 const PLACEMENT_BEAM_WIDTH = 12;
 const PACKAGE_VARIANT_WIDTH = 6;
 const PLACEMENT_BRANCH_WIDTH = 3;
-const PLACEMENT_WEEK_CHOICES = 3;
 const PLACEMENT_ORDER_LIMIT = 3;
 const MAX_PLACEMENT_STATES = 50_000;
 
@@ -139,11 +138,20 @@ function placementCandidates(
   remaining: number,
   packageIntervals: Interval[],
 ) {
-  const candidatesByWeek = new Map<string, ReturnType<typeof candidateForDay>>();
-  function candidateForDay(day: DateTime) {
+  for (
+    let day = earliest.startOf("day");
+    day < input.end;
+    day = day.plus({ days: 1 })
+  ) {
+    if (
+      project.deadlineType === "HARD"
+      && project.targetEndDate
+      && day.startOf("day") > DateTime.fromJSDate(project.targetEndDate, { zone: "utc" })
+        .setZone(SCHEDULE_TIME_ZONE).startOf("day")
+    ) return [];
     const dayName = day.toFormat("cccc").toUpperCase();
     const earliestDate = earliest.toUTC().toJSDate();
-    return input.employees.flatMap((employee) => {
+    const candidates = input.employees.flatMap((employee) => {
       const qualified = employee.skills.some(
         (skill) => skill.skillId === workPackage.requiredSkillId
           && skill.level >= workPackage.minimumSkillLevel,
@@ -191,75 +199,30 @@ function placementCandidates(
         ) return [];
         const cost = allocationCostBreakdown(employee, used, minutes);
         const employeeScarcity = employee.skills.length;
-        const projectWeekCost = state.assignments
-          .filter((assignment) => assignment.projectId === project.id
-            && weekKey(assignment.startAt) === weekKey(interval.startAt))
-          .reduce((total, assignment) => total + assignment.plannedCostCents, 0);
-        const cap = project.weeklyLaborBudgetCents;
-        const budgetOverrunDelta = cap === null
-          ? 0
-          : Math.max(0, projectWeekCost + cost.totalCostCents - cap)
-            - Math.max(0, projectWeekCost - cap);
-        return [{
-          employee,
-          interval,
-          minutes,
-          cost,
-          employeeScarcity,
-          budgetOverrunDelta,
-        }];
+        return [{ employee, interval, minutes, cost, employeeScarcity }];
       })
       .sort((first, second) =>
-        first.budgetOverrunDelta - second.budgetOverrunDelta
+        first.interval.startAt.getTime() - second.interval.startAt.getTime()
         || first.cost.overtimeMinutes - second.cost.overtimeMinutes
         || first.employeeScarcity - second.employeeScarcity
         || first.cost.totalCostCents - second.cost.totalCostCents
-        || first.interval.startAt.getTime() - second.interval.startAt.getTime()
         || first.employee.id - second.employee.id,
       );
+    if (candidates.length > 0) return candidates;
   }
-  for (
-    let day = earliest.startOf("day");
-    day < input.end;
-    day = day.plus({ days: 1 })
-  ) {
-    if (
-      project.deadlineType === "HARD"
-      && project.targetEndDate
-      && day.startOf("day") > DateTime.fromJSDate(project.targetEndDate, { zone: "utc" })
-        .setZone(SCHEDULE_TIME_ZONE).startOf("day")
-    ) return [];
-    const candidates = candidateForDay(day);
-    const key = day.startOf("week").toISODate()!;
-    if (candidates.length > 0 && !candidatesByWeek.has(key)) {
-      candidatesByWeek.set(key, candidates);
-      if (
-        candidatesByWeek.size === 1
-        && candidates[0]!.budgetOverrunDelta === 0
-        && candidates[0]!.cost.overtimeMinutes === 0
-      ) return candidates;
-      if (candidatesByWeek.size >= PLACEMENT_WEEK_CHOICES) break;
-    }
-  }
-  return [...candidatesByWeek.values()]
-    .flatMap((candidates) => candidates.slice(0, PLACEMENT_BRANCH_WIDTH))
-    .sort((first, second) =>
-      first.budgetOverrunDelta - second.budgetOverrunDelta
-      || first.cost.overtimeMinutes - second.cost.overtimeMinutes
-      || first.cost.totalCostCents - second.cost.totalCostCents
-      || first.interval.startAt.getTime() - second.interval.startAt.getTime()
-      || first.employee.id - second.employee.id,
-    );
+  return [];
 }
 
-function variantVector(variant: PackageVariant, input: PortfolioOptimizerInput) {
-  return [
-    variant.remaining,
-    ...objectiveVector({
-      assignments: variant.state.assignments,
-      unplannedWorkPackages: variant.state.unplannedWorkPackages,
-    }, input),
-  ];
+function variantVector(variant: PackageVariant) {
+  const overtime = variant.state.assignments.reduce(
+    (total, assignment) => total + assignment.overtimeMinutes,
+    0,
+  );
+  const cost = variant.state.assignments.reduce(
+    (total, assignment) => total + assignment.plannedCostCents,
+    0,
+  );
+  return [variant.remaining, overtime, cost];
 }
 
 function placementSignature(state: PlacementState) {
@@ -396,7 +359,7 @@ function schedulePackageVariants(
         completed.push(variant.state);
         continue;
       }
-      for (const candidate of candidates.slice(0, PLACEMENT_BRANCH_WIDTH * PLACEMENT_WEEK_CHOICES)) {
+      for (const candidate of candidates.slice(0, PLACEMENT_BRANCH_WIDTH)) {
         if (stats.exploredStates >= MAX_PLACEMENT_STATES) {
           stats.searchLimitReached = true;
           break;
@@ -429,7 +392,7 @@ function schedulePackageVariants(
     }
     if (stats.searchLimitReached) break;
     expanded.sort((first, second) =>
-      compareVectors(variantVector(first, input), variantVector(second, input))
+      compareVectors(variantVector(first), variantVector(second))
       || compareSignatures(
         placementSignature(first.state),
         placementSignature(second.state),
@@ -501,13 +464,13 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
   }
 
   const greedyMetrics = v1.optimizerDiagnostics.greedyBaseline;
-  const v1Metrics = resultMetrics(v1, input);
-  const optimizedMetrics = resultMetrics(best, input);
+  const v1Metrics = resultMetrics(v1);
+  const optimizedMetrics = resultMetrics(best);
   return {
     ...best,
     optimizerDiagnostics: {
-      algorithmVersion: "portfolio-beam-v3",
-      strategy: "BUDGET_AWARE_MULTI_WEEK_BEAM_SEARCH",
+      algorithmVersion: "portfolio-beam-v2",
+      strategy: "PLACEMENT_AWARE_BOUNDED_BEAM_SEARCH",
       beamWidth: PLACEMENT_BEAM_WIDTH,
       packageVariantWidth: PACKAGE_VARIANT_WIDTH,
       branchWidth: PLACEMENT_BRANCH_WIDTH,
@@ -524,10 +487,8 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
         lowUnplannedMinutes: bestVector[3],
         deadlineExposureMinutes: bestVector[4],
         overtimeMinutes: bestVector[5],
-        weeklyBudgetOverrunCents: bestVector[6],
-        laborCostCents: bestVector[7],
-        balancedPeakMinutes: bestVector[8],
-        imbalanceBasisPoints: bestVector[9],
+        laborCostCents: bestVector[6],
+        imbalanceBasisPoints: bestVector[7],
       },
       greedyBaseline: greedyMetrics,
       v1Baseline: v1Metrics,
@@ -537,20 +498,12 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
         unplannedMinutes: greedyMetrics.unplannedMinutes - optimizedMetrics.unplannedMinutes,
         overtimeMinutes: greedyMetrics.overtimeMinutes - optimizedMetrics.overtimeMinutes,
         laborCostCents: greedyMetrics.laborCostCents - optimizedMetrics.laborCostCents,
-        weeklyBudgetOverrunCents: greedyMetrics.weeklyBudgetOverrunCents
-          - optimizedMetrics.weeklyBudgetOverrunCents,
-        balancedPeakMinutes: greedyMetrics.balancedPeakMinutes
-          - optimizedMetrics.balancedPeakMinutes,
       },
       improvementVsV1: {
         plannedMinutes: optimizedMetrics.plannedMinutes - v1Metrics.plannedMinutes,
         unplannedMinutes: v1Metrics.unplannedMinutes - optimizedMetrics.unplannedMinutes,
         overtimeMinutes: v1Metrics.overtimeMinutes - optimizedMetrics.overtimeMinutes,
         laborCostCents: v1Metrics.laborCostCents - optimizedMetrics.laborCostCents,
-        weeklyBudgetOverrunCents: v1Metrics.weeklyBudgetOverrunCents
-          - optimizedMetrics.weeklyBudgetOverrunCents,
-        balancedPeakMinutes: v1Metrics.balancedPeakMinutes
-          - optimizedMetrics.balancedPeakMinutes,
       },
     },
   };

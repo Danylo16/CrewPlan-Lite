@@ -98,8 +98,6 @@ export function PlannerPage() {
     return optimized.plannedMinutes > greedyBaseline.plannedMinutes
       || optimized.unplannedMinutes < greedyBaseline.unplannedMinutes
       || optimized.overtimeMinutes < greedyBaseline.overtimeMinutes
-      || optimized.weeklyBudgetOverrunCents < greedyBaseline.weeklyBudgetOverrunCents
-      || optimized.balancedPeakMinutes < greedyBaseline.balancedPeakMinutes
       || optimized.laborCostCents < greedyBaseline.laborCostCents;
   }, [preview]);
 
@@ -167,8 +165,8 @@ export function PlannerPage() {
 
       <section className="planner-dashboard-section">
         <div className="planner-section-heading">
-          <div><span>Cost control</span><h3>Labor cost and budget variance</h3><p>Actual means confirmed Work Logs. Horizon plan means committed allocations plus this preview. Known cost is their sum.</p></div>
-          <div className={`budget-verdict ${budgetPortfolio.projects > 0 && budgetPortfolio.varianceCents > 0 ? "budget-over" : "budget-under"}`}><span>Net total-budget headroom</span><strong>{budgetPortfolio.projects === 0 ? "No total budgets" : varianceLabel(budgetPortfolio.varianceCents)}</strong><small>Across {budgetPortfolio.projects} budgeted projects</small></div>
+          <div><span>Cost forecast</span><h3>What has been spent and what this plan would cost</h3><p>Confirmed work cost + scheduled horizon cost = known project cost. A preview never counts as completed work.</p></div>
+          <div className={`budget-verdict ${budgetPortfolio.projects > 0 && budgetPortfolio.varianceCents > 0 ? "budget-over" : "budget-under"}`}><span>Portfolio budget remaining</span><strong>{budgetPortfolio.projects === 0 ? "No total budgets" : varianceLabel(budgetPortfolio.varianceCents)}</strong><small>Net across {budgetPortfolio.projects} projects · weekly caps checked separately</small></div>
         </div>
 
         <div className="cost-breakdown-grid">
@@ -180,7 +178,7 @@ export function PlannerPage() {
         </div>
 
         <div className="project-budget-list">
-          <div className="project-budget-header"><span>Project</span><span>Actual logged</span><span>Horizon plan</span><span>Known total</span><span>Total budget</span><span>Headroom</span></div>
+          <div className="project-budget-header"><span>Project</span><span>Completed work cost</span><span>Next {preview.horizonWeeks} weeks</span><span>Actual + plan</span><span>Approved budget</span><span>Budget remaining</span></div>
           {preview.projectCostSummaries.map((project) => {
             const usage = project.totalBudgetCents && project.totalBudgetCents > 0 ? Math.min(100, project.knownCostCents / project.totalBudgetCents * 100) : 0;
             return <article className="project-budget-row" key={project.projectId}>
@@ -215,8 +213,6 @@ export function PlannerPage() {
           <div><strong>Planned work</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.plannedMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.plannedMinutes)}</span><b>{gainHours(preview.optimizerDiagnostics.optimized.plannedMinutes - preview.optimizerDiagnostics.greedyBaseline.plannedMinutes)}</b></div>
           <div><strong>Unplanned work</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.unplannedMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.unplannedMinutes)}</span><b>{gainHours(preview.optimizerDiagnostics.greedyBaseline.unplannedMinutes - preview.optimizerDiagnostics.optimized.unplannedMinutes, "reduced")}</b></div>
           <div><strong>Overtime</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.overtimeMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.overtimeMinutes)}</span><b>{gainHours(preview.optimizerDiagnostics.greedyBaseline.overtimeMinutes - preview.optimizerDiagnostics.optimized.overtimeMinutes, "reduced")}</b></div>
-          <div><strong>Weekly cap overrun</strong><span>{money(preview.optimizerDiagnostics.greedyBaseline.weeklyBudgetOverrunCents)}</span><span>{money(preview.optimizerDiagnostics.optimized.weeklyBudgetOverrunCents)}</span><b>{costOutcome(preview.optimizerDiagnostics.greedyBaseline.weeklyBudgetOverrunCents, preview.optimizerDiagnostics.optimized.weeklyBudgetOverrunCents)}</b></div>
-          <div><strong>Peak balanced-project work</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.balancedPeakMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.balancedPeakMinutes)}</span><b>{gainHours(preview.optimizerDiagnostics.greedyBaseline.balancedPeakMinutes - preview.optimizerDiagnostics.optimized.balancedPeakMinutes, "lower")}</b></div>
           <div><strong>Labor cost</strong><span>{money(preview.optimizerDiagnostics.greedyBaseline.laborCostCents)}</span><span>{money(preview.optimizerDiagnostics.optimized.laborCostCents)}</span><b>{costOutcome(preview.optimizerDiagnostics.greedyBaseline.laborCostCents, preview.optimizerDiagnostics.optimized.laborCostCents)}</b></div>
         </div>
 

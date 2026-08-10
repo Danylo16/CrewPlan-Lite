@@ -966,6 +966,12 @@ textarea {
 .secondary-button:disabled,
 .primary-button:disabled { cursor: not-allowed; opacity: .48; }
 .actuals-heading { margin-top: 36px; }
+.actuals-start-guide { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 14px; border-color: #c7d2fe; background: #eef2ff; }
+.actuals-start-guide strong,
+.actuals-start-guide span { display: block; }
+.actuals-start-guide span { margin-top: 5px; color: #5b6475; font-size: 12px; }
+.actuals-start-guide small { color: #697386; }
+.actuals-start-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .actuals-table { padding-block: 8px; }
 .actual-row { display: grid; grid-template-columns: minmax(220px, 1fr) 80px 100px 100px auto; gap: 14px; align-items: center; padding: 12px 4px; border-bottom: 1px solid #edf0f4; }
 .actual-row:last-child { border-bottom: 0; }

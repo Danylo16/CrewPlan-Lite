@@ -80,7 +80,6 @@ function project(
     startDate: new Date("2026-08-10T00:00:00.000Z"),
     targetEndDate: new Date("2026-08-31T00:00:00.000Z"),
     deadlineType: "SOFT",
-    weeklyLaborBudgetCents: null,
     workPackages,
     ...overrides,
   };
@@ -259,9 +258,9 @@ const report = scenarios().map((scenario) => {
   if (assignmentSignature(v2.value) !== assignmentSignature(repeatedV2)) {
     throw new Error(`${scenario.name}: v2 produced a non-deterministic plan`);
   }
-  const greedyMetrics = resultMetrics(greedy.value, scenario.input);
-  const v1Metrics = resultMetrics(v1.value, scenario.input);
-  const v2Metrics = resultMetrics(v2.value, scenario.input);
+  const greedyMetrics = resultMetrics(greedy.value);
+  const v1Metrics = resultMetrics(v1.value);
+  const v2Metrics = resultMetrics(v2.value);
   return {
     scenario: scenario.name,
     description: scenario.description,

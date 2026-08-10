@@ -231,8 +231,6 @@ export interface PortfolioPlanCostBaseline {
   unplannedMinutes: number;
   overtimeMinutes: number;
   laborCostCents: number;
-  weeklyBudgetOverrunCents: number;
-  balancedPeakMinutes: number;
 }
 
 export interface PortfolioOptimizerDiagnostics {
@@ -254,9 +252,7 @@ export interface PortfolioOptimizerDiagnostics {
     lowUnplannedMinutes: number;
     deadlineExposureMinutes: number;
     overtimeMinutes: number;
-    weeklyBudgetOverrunCents: number;
     laborCostCents: number;
-    balancedPeakMinutes: number;
     imbalanceBasisPoints: number;
   };
   greedyBaseline: PortfolioPlanCostBaseline;
