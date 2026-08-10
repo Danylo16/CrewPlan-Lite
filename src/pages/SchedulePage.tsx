@@ -1,14 +1,10 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { apiRequest } from "../api/client";
 import type {
-  AppliedSchedule,
   Employee,
   Holiday,
   Project,
-  ProposedAssignment,
-  SchedulePreview,
   Shift,
-  UnfilledRequirement,
 } from "../types";
 
 interface ShiftForm {
@@ -54,7 +50,7 @@ function toLocalInputValue(date: Date) {
 function scheduleInputToUtc(value: string) {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
   if (!match) {
-    throw new Error("Invalid shift date or time");
+    throw new Error("Invalid allocation date or time");
   }
   const [, year, month, day, hour, minute] = match;
   const localTimestamp = Date.UTC(
@@ -145,30 +141,14 @@ function formatTime(date: string) {
   }).format(new Date(date));
 }
 
-function formatMinutes(minutes: number) {
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = String(minutes % 60).padStart(2, "0");
-
-  return `${hours}:${remainingMinutes}`;
+function allocationLabel(shift: Shift) {
+  if (shift.kind === "WORK_PACKAGE") return "Planned work";
+  if (shift.kind === "FIXED_COVERAGE") return "Fixed coverage";
+  if (shift.origin === "MANUAL") return "Manual allocation";
+  return "Legacy allocation";
 }
 
-function describeRejections(requirement: UnfilledRequirement) {
-  const labels = {
-    NOT_AVAILABLE: "unavailable",
-    MISSING_SKILL: "missing skill",
-    OVERLAP: "overlap",
-    WEEKLY_LIMIT: "weekly limit",
-  } as const;
-
-  return Object.entries(requirement.rejectionCounts)
-    .filter(([, count]) => count > 0)
-    .map(([reason, count]) =>
-      `${count} ${labels[reason as keyof typeof labels]}`,
-    )
-    .join(" · ");
-}
-
-export function SchedulePage() {
+export function AllocationCalendarPage() {
   const [employeeFilter, setEmployeeFilter] = useState("");
   const [projectFilter, setProjectFilter] = useState("");
   const [holidayWarning, setHolidayWarning] = useState(false);
@@ -191,11 +171,6 @@ export function SchedulePage() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isApplying, setIsApplying] = useState(false);
-  const [replaceExisting, setReplaceExisting] = useState(false);
-  const [preview, setPreview] = useState<SchedulePreview | null>(null);
-  const [scheduleReloadKey, setScheduleReloadKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const days = Array.from({ length: 7 }, (_, index) =>
@@ -213,23 +188,6 @@ export function SchedulePage() {
 
     return matchesEmployee && matchesProject;
   });
-
-  const filteredAssignments = (preview?.assignments ?? []).filter(
-    (assignment) => {
-      const matchesEmployee =
-        !employeeFilter ||
-        assignment.employeeId === Number(employeeFilter);
-      const matchesProject =
-        !projectFilter ||
-        assignment.projectId === Number(projectFilter);
-
-      return matchesEmployee && matchesProject;
-    },
-  );
-
-  const visiblePersistedShifts = preview?.replaceExisting
-    ? []
-    : filteredShifts;
 
   useEffect(() => {
     async function loadSchedule() {
@@ -287,7 +245,7 @@ export function SchedulePage() {
         setError(
           loadError instanceof Error
             ? loadError.message
-            : "Failed to load schedule",
+            : "Failed to load allocations",
         );
       } finally {
         setIsLoading(false);
@@ -295,7 +253,7 @@ export function SchedulePage() {
     }
 
     void loadSchedule();
-  }, [weekStart, scheduleReloadKey]);
+  }, [weekStart]);
 
   function resetShiftForm() {
     setForm((currentForm) => ({
@@ -342,7 +300,6 @@ export function SchedulePage() {
     setWeekStart(nextWeek);
     setEditingShift(null);
     setError(null);
-    setPreview(null);
 
     setForm((currentForm) => ({
       ...createInitialForm(nextWeek),
@@ -357,7 +314,6 @@ export function SchedulePage() {
     setWeekStart(startOfWeek(now));
     setEditingShift(null);
     setError(null);
-    setPreview(null);
 
     setForm((currentForm) => ({
       ...createInitialForm(now),
@@ -411,12 +367,11 @@ export function SchedulePage() {
       });
 
       resetShiftForm();
-      setPreview(null);
     } catch (submitError) {
       setError(
         submitError instanceof Error
           ? submitError.message
-          : "Failed to save shift",
+          : "Failed to save allocation",
       );
     } finally {
       setIsSubmitting(false);
@@ -429,7 +384,7 @@ export function SchedulePage() {
     }
 
     const confirmed = window.confirm(
-      `Delete the shift for ${editingShift.employee.name}?`,
+      `Delete the allocation for ${editingShift.employee.name}?`,
     );
 
     if (!confirmed) {
@@ -451,95 +406,24 @@ export function SchedulePage() {
       );
 
       resetShiftForm();
-      setPreview(null);
     } catch (deleteError) {
       setError(
         deleteError instanceof Error
           ? deleteError.message
-          : "Failed to delete shift",
+          : "Failed to delete allocation",
       );
     } finally {
       setIsSubmitting(false);
     }
   }
 
-  async function handleGenerateSchedule() {
-    setError(null);
-    setIsGenerating(true);
-    setEditingShift(null);
-
-    try {
-      const generatedPreview = await apiRequest<SchedulePreview>(
-        "/schedule/generate",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            weekStart: toDateKey(weekStart),
-            replaceExisting,
-          }),
-        },
-      );
-
-      setPreview(generatedPreview);
-    } catch (generateError) {
-      setError(
-        generateError instanceof Error
-          ? generateError.message
-          : "Failed to generate schedule",
-      );
-    } finally {
-      setIsGenerating(false);
-    }
-  }
-
-  async function handleApplySchedule() {
-    if (!preview) {
-      return;
-    }
-
-    setError(null);
-    setIsApplying(true);
-
-    try {
-      await apiRequest<AppliedSchedule>("/schedule/apply", {
-        method: "POST",
-        body: JSON.stringify({
-          weekStart: preview.weekStart,
-          replaceExisting: preview.replaceExisting,
-          previewId: preview.previewId,
-          inputVersion: preview.inputVersion,
-        }),
-      });
-
-      setPreview(null);
-      setScheduleReloadKey((current) => current + 1);
-    } catch (applyError) {
-      setError(
-        applyError instanceof Error
-          ? applyError.message
-          : "Failed to apply schedule",
-      );
-    } finally {
-      setIsApplying(false);
-    }
-  }
-
-  function assignmentEmployee(assignment: ProposedAssignment) {
-    return employees.find((employee) => employee.id === assignment.employeeId);
-  }
-
-  function assignmentProject(assignment: ProposedAssignment) {
-    return projects.find((project) => project.id === assignment.projectId);
-  }
-
   return (
     <section>
       <div className="page-header schedule-header">
         <div>
-          <h2>Schedule</h2>
+          <h2>Allocation calendar</h2>
           <p>
-            Plan employee assignments and prevent overlapping
-            shifts.
+            Review portfolio allocations and manage manual commitments.
           </p>
         </div>
 
@@ -586,7 +470,7 @@ export function SchedulePage() {
       {editingShift && (
         <div className="editing-notice">
           <div>
-            <strong>Editing shift</strong>
+            <strong>Editing allocation</strong>
             <span>
               {editingShift.employee.name} ·{" "}
               {editingShift.project.name}
@@ -718,7 +602,7 @@ export function SchedulePage() {
               ? "Saving…"
               : editingShift
                 ? "Save changes"
-                : "Create shift"}
+                : "Add manual allocation"}
           </button>
         </div>
       </form>
@@ -728,124 +612,6 @@ export function SchedulePage() {
           {error}
         </div>
       )}
-
-      <div className="panel schedule-generator">
-        <div className="generator-heading">
-          <div>
-            <span className="generator-eyebrow">Constraint solver</span>
-            <h3>Generate weekly schedule</h3>
-            <p>
-              Assign employees by availability, skills, project priority,
-              and weekly hour limits.
-            </p>
-          </div>
-
-          <div className="generator-controls">
-            <label className="replace-toggle">
-              <input
-                type="checkbox"
-                checked={replaceExisting}
-                disabled={isGenerating || isApplying}
-                onChange={(event) => {
-                  setReplaceExisting(event.target.checked);
-                  setPreview(null);
-                }}
-              />
-              Replace existing shifts
-            </label>
-
-            <button
-              type="button"
-              className="primary-button"
-              disabled={isGenerating || isApplying || isLoading}
-              onClick={handleGenerateSchedule}
-            >
-              {isGenerating ? "Optimizing…" : "Generate schedule"}
-            </button>
-          </div>
-        </div>
-
-        {preview && (
-          <div className="schedule-preview-summary">
-            <div className="preview-metrics">
-              <div>
-                <span>Coverage</span>
-                <strong>{preview.metrics.coveragePercent}%</strong>
-              </div>
-              <div>
-                <span>Existing</span>
-                <strong>
-                  {preview.metrics.existingPositions}
-                </strong>
-              </div>
-              <div>
-                <span>Proposed</span>
-                <strong>
-                  {preview.metrics.proposedPositions}
-                </strong>
-              </div>
-              <div>
-                <span>Conflicts</span>
-                <strong>{preview.metrics.hardConflicts}</strong>
-              </div>
-            </div>
-
-            {preview.unfilledRequirements.length > 0 && (
-              <details className="unfilled-requirements">
-                <summary>
-                  {preview.unfilledRequirements.length} unfilled position
-                  {preview.unfilledRequirements.length === 1 ? "" : "s"}
-                </summary>
-
-                {preview.unfilledRequirements.map((requirement) => {
-                  const project = projects.find(
-                    (item) => item.id === requirement.projectId,
-                  );
-
-                  return (
-                    <div
-                      className="unfilled-item"
-                      key={`${requirement.requirementId}-${requirement.positionIndex}`}
-                    >
-                      <span className={`priority-badge ${requirement.priority.toLowerCase()}`}>
-                        {requirement.priority}
-                      </span>
-                      <div>
-                        <strong>{project?.name ?? "Unknown project"}</strong>
-                        <span>
-                          {requirement.dayOfWeek.toLowerCase()} ·{" "}
-                          {formatMinutes(requirement.startMinute)}–
-                          {formatMinutes(requirement.endMinute)}
-                        </span>
-                        <small>{describeRejections(requirement)}</small>
-                      </div>
-                    </div>
-                  );
-                })}
-              </details>
-            )}
-
-            <div className="preview-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={isApplying}
-                onClick={() => setPreview(null)}
-              >
-                Discard
-              </button>
-              <button
-                type="button"
-                className="primary-button"
-                disabled={isApplying}
-                onClick={handleApplySchedule}
-              >
-                {isApplying ? "Applying…" : "Apply schedule"}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
 
       <div className="schedule-toolbar">
         <div className="schedule-filters">
@@ -900,31 +666,27 @@ export function SchedulePage() {
         </div>
 
         <span className="visible-shifts-count">
-         {visiblePersistedShifts.length + filteredAssignments.length}{" "}
-         {visiblePersistedShifts.length + filteredAssignments.length === 1
-           ? "visible shift"
-           : "visible shifts"}
+         {filteredShifts.length}{" "}
+         {filteredShifts.length === 1
+           ? "visible allocation"
+           : "visible allocations"}
         </span>
       </div>
 
       {holidayWarning && (
         <div className="warning-message">
-          Public holidays are temporarily unavailable. Shifts are
+          Public holidays are temporarily unavailable. Allocations are
           still displayed.
         </div>
       )}
 
       {isLoading ? (
-        <p className="muted-text">Loading schedule…</p>
+        <p className="muted-text">Loading allocations…</p>
       ) : (
         <div className="calendar">
           {days.map((day) => {
-            const dayShifts = visiblePersistedShifts.filter((shift) => {
+            const dayShifts = filteredShifts.filter((shift) => {
               return scheduleDateKey(shift.startAt) === toDateKey(day);
-            });
-
-            const dayAssignments = filteredAssignments.filter((assignment) => {
-              return scheduleDateKey(assignment.startAt) === toDateKey(day);
             });
 
             const dayHolidays = holidays.filter(
@@ -962,58 +724,46 @@ export function SchedulePage() {
                 ))}
 
                 <div className="day-shifts">
-                  {dayShifts.length === 0 && dayAssignments.length === 0 && (
-                    <span className="no-shifts">No shifts</span>
+                  {dayShifts.length === 0 && (
+                    <span className="no-shifts">No allocations</span>
                   )}
 
-                  {dayShifts.map((shift) => (
-                    <button
-                      className="shift-card"
-                      key={shift.id}
-                      type="button"
-                      title="Edit shift"
-                      style={{
-                        borderLeftColor: shift.project.color,
-                      }}
-                      onClick={() => startEditingShift(shift)}
-                    >
-                      <strong>{shift.project.name}</strong>
-
-                      <span>
-                        {formatTime(shift.startAt)}
-                        {" – "}
-                        {formatTime(shift.endAt)}
-                      </span>
-
-                      <p>{shift.employee.name}</p>
-
-                      {shift.note && <small>{shift.note}</small>}
-                    </button>
-                  ))}
-
-                  {dayAssignments.map((assignment) => {
-                    const employee = assignmentEmployee(assignment);
-                    const project = assignmentProject(assignment);
+                  {dayShifts.map((shift) => {
+                    const editable = shift.origin !== "SOLVER";
 
                     return (
-                      <div
-                        className="shift-card proposed-shift"
-                        key={`preview-${assignment.requirementId}-${assignment.positionIndex}`}
+                      <button
+                        className={`shift-card ${editable ? "" : "read-only-allocation"}`}
+                        key={shift.id}
+                        type="button"
+                        title={editable
+                          ? "Edit allocation"
+                          : "Managed by Portfolio Planner"}
                         style={{
-                          borderLeftColor: project?.color ?? "#5267df",
+                          borderLeftColor: shift.project.color,
                         }}
+                        onClick={editable
+                          ? () => startEditingShift(shift)
+                          : undefined}
                       >
-                        <small className="preview-label">Proposed</small>
-                        <strong>{project?.name ?? "Unknown project"}</strong>
+                        <small className="allocation-kind">
+                          {allocationLabel(shift)}
+                        </small>
+                        <strong>{shift.project.name}</strong>
+
                         <span>
-                          {formatTime(assignment.startAt)}
+                          {formatTime(shift.startAt)}
                           {" – "}
-                          {formatTime(assignment.endAt)}
+                          {formatTime(shift.endAt)}
                         </span>
-                        <p>{employee?.name ?? "Unknown employee"}</p>
-                      </div>
+
+                        <p>{shift.employee.name}</p>
+
+                        {shift.note && <small>{shift.note}</small>}
+                      </button>
                     );
                   })}
+
                 </div>
               </div>
             );

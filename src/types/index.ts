@@ -151,9 +151,16 @@ export interface Shift {
   id: number;
   employeeId: number;
   projectId: number;
+  workPackageId: number | null;
+  projectRequirementId: number | null;
+  planningRunId: string | null;
   startAt: string;
   endAt: string;
   note: string | null;
+  kind: "GENERAL" | "WORK_PACKAGE" | "FIXED_COVERAGE";
+  origin: "MANUAL" | "SOLVER" | "LEGACY";
+  status: "COMMITTED" | "CANCELLED";
+  plannedCostCents: number | null;
   createdAt: string;
   updatedAt: string;
   employee: Employee;
@@ -173,67 +180,6 @@ export type RequirementPriority =
   | "NORMAL"
   | "HIGH"
   | "CRITICAL";
-
-export interface ProposedAssignment {
-  requirementId: number;
-  positionIndex: number;
-  employeeId: number;
-  projectId: number;
-  dayOfWeek: string;
-  startMinute: number;
-  endMinute: number;
-  startAt: string;
-  endAt: string;
-}
-
-export interface UnfilledRequirement {
-  requirementId: number;
-  positionIndex: number;
-  projectId: number;
-  dayOfWeek: string;
-  startMinute: number;
-  endMinute: number;
-  priority: RequirementPriority;
-  rejectionCounts: {
-    NOT_AVAILABLE: number;
-    MISSING_SKILL: number;
-    OVERLAP: number;
-    WEEKLY_LIMIT: number;
-  };
-}
-
-export interface ScheduleMetrics {
-  requestedPositions: number;
-  assignedPositions: number;
-  existingPositions: number;
-  proposedPositions: number;
-  unfilledPositions: number;
-  coveragePercent: number;
-  assignedMinutes: number;
-  penalty: number;
-  exploredNodes: number;
-  searchLimitReached: boolean;
-  hardConflicts: number;
-}
-
-export interface SchedulePreview {
-  previewId: string;
-  inputVersion: string;
-  weekStart: string;
-  timezone: string;
-  replaceExisting: boolean;
-  assignments: ProposedAssignment[];
-  unfilledRequirements: UnfilledRequirement[];
-  metrics: ScheduleMetrics;
-}
-
-export interface AppliedSchedule {
-  previewId: string;
-  inputVersion: string;
-  createdShifts: number;
-  deletedShifts: number;
-  metrics: ScheduleMetrics;
-}
 
 export interface PortfolioPlanAssignment {
   employeeId: number;

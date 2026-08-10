@@ -1,9 +1,9 @@
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { EmployeesPage } from "./pages/EmployeesPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
 import { ProjectDetailsPage } from "./pages/ProjectDetailsPage";
-import { SchedulePage } from "./pages/SchedulePage";
+import { AllocationCalendarPage } from "./pages/SchedulePage";
 import { PlannerPage } from "./pages/PlannerPage";
 
 export default function App() {
@@ -12,7 +12,8 @@ export default function App() {
       <Routes>
         <Route element={<Layout />}>
           <Route path="/" element={<PlannerPage />} />
-          <Route path="/schedule" element={<SchedulePage />} />
+          <Route path="/allocations" element={<AllocationCalendarPage />} />
+          <Route path="/schedule" element={<Navigate replace to="/allocations" />} />
           <Route path="/employees" element={<EmployeesPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/:id" element={<ProjectDetailsPage />} />
