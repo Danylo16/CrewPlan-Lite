@@ -64,6 +64,7 @@ export interface OptimizerProject {
   startDate: Date | null;
   targetEndDate: Date | null;
   deadlineType: string;
+  weeklyLaborBudgetCents: number | null;
   workPackages: OptimizerWorkPackage[];
 }
 
@@ -452,6 +453,38 @@ export function objectiveVector(
     (total, assignment) => total + assignment.plannedCostCents,
     0,
   );
+  const projectWeekCosts = new Map<string, number>();
+  const balancedWeekMinutes = new Map<string, number>();
+  for (const assignment of result.assignments) {
+    const project = projectById.get(assignment.projectId);
+    const key = `${assignment.projectId}:${weekKey(assignment.startAt)}`;
+    projectWeekCosts.set(
+      key,
+      (projectWeekCosts.get(key) ?? 0) + assignment.plannedCostCents,
+    );
+    if (project?.optimizationStrategy === "BALANCED") {
+      balancedWeekMinutes.set(
+        weekKey(assignment.startAt),
+        (balancedWeekMinutes.get(weekKey(assignment.startAt)) ?? 0)
+          + Math.round(
+            (assignment.endAt.getTime() - assignment.startAt.getTime()) / 60_000,
+          ),
+      );
+    }
+  }
+  const weeklyBudgetOverrunCents = [...projectWeekCosts].reduce(
+    (total, [key, cost]) => {
+      const projectId = Number(key.split(":", 1)[0]);
+      const cap = projectById.get(projectId)?.weeklyLaborBudgetCents;
+      return total + (cap === null || cap === undefined ? 0 : Math.max(0, cost - cap));
+    },
+    0,
+  );
+  const balancedLoads = Array.from(
+    { length: Math.max(1, Math.ceil(input.end.diff(input.start, "weeks").weeks)) },
+    (_, index) => balancedWeekMinutes.get(input.start.plus({ weeks: index }).toISODate()!) ?? 0,
+  );
+  const balancedPeakMinutes = Math.max(0, ...balancedLoads);
   const assignedByEmployee = new Map<number, number>();
   for (const assignment of result.assignments) {
     const minutes = Math.round(
@@ -473,7 +506,9 @@ export function objectiveVector(
     ...unplannedByPriority,
     deadlineExposureMinutes,
     overtimeMinutes,
+    weeklyBudgetOverrunCents,
     plannedCostCents,
+    balancedPeakMinutes,
     imbalanceBasisPoints,
   ];
 }
@@ -486,12 +521,16 @@ export function compareVectors(first: number[], second: number[]) {
   return 0;
 }
 
-export function resultMetrics(result: ReturnType<typeof allocatePortfolioWorkGreedy>) {
+export function resultMetrics(
+  result: ReturnType<typeof allocatePortfolioWorkGreedy>,
+  input: PortfolioOptimizerInput,
+) {
   const plannedMinutes = result.assignments.reduce(
     (total, assignment) => total
       + Math.round((assignment.endAt.getTime() - assignment.startAt.getTime()) / 60_000),
     0,
   );
+  const vector = objectiveVector(result, input);
   return {
     plannedMinutes,
     unplannedMinutes: result.unplannedWorkPackages.reduce(
@@ -506,6 +545,8 @@ export function resultMetrics(result: ReturnType<typeof allocatePortfolioWorkGre
       (total, assignment) => total + assignment.plannedCostCents,
       0,
     ),
+    weeklyBudgetOverrunCents: vector[6] ?? 0,
+    balancedPeakMinutes: vector[8] ?? 0,
   };
 }
 
@@ -583,8 +624,8 @@ export function allocatePortfolioWorkV1(input: PortfolioOptimizerInput) {
     }
   }
 
-  const baselineMetrics = resultMetrics(greedyBaseline);
-  const optimizedMetrics = resultMetrics(best);
+  const baselineMetrics = resultMetrics(greedyBaseline, input);
+  const optimizedMetrics = resultMetrics(best, input);
   return {
     ...best,
     optimizerDiagnostics: {
@@ -603,8 +644,10 @@ export function allocatePortfolioWorkV1(input: PortfolioOptimizerInput) {
         lowUnplannedMinutes: bestVector[3],
         deadlineExposureMinutes: bestVector[4],
         overtimeMinutes: bestVector[5],
-        laborCostCents: bestVector[6],
-        imbalanceBasisPoints: bestVector[7],
+        weeklyBudgetOverrunCents: bestVector[6],
+        laborCostCents: bestVector[7],
+        balancedPeakMinutes: bestVector[8],
+        imbalanceBasisPoints: bestVector[9],
       },
       greedyBaseline: baselineMetrics,
       optimized: optimizedMetrics,
@@ -613,6 +656,10 @@ export function allocatePortfolioWorkV1(input: PortfolioOptimizerInput) {
         unplannedMinutes: baselineMetrics.unplannedMinutes - optimizedMetrics.unplannedMinutes,
         overtimeMinutes: baselineMetrics.overtimeMinutes - optimizedMetrics.overtimeMinutes,
         laborCostCents: baselineMetrics.laborCostCents - optimizedMetrics.laborCostCents,
+        weeklyBudgetOverrunCents: baselineMetrics.weeklyBudgetOverrunCents
+          - optimizedMetrics.weeklyBudgetOverrunCents,
+        balancedPeakMinutes: baselineMetrics.balancedPeakMinutes
+          - optimizedMetrics.balancedPeakMinutes,
       },
     },
   };

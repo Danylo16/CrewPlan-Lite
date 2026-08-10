@@ -154,7 +154,7 @@ describe("multi-week portfolio planner", () => {
     expect(preview.assignments.find((item) => item.workPackageId === 10)?.employeeId).toBe(2);
     expect(preview.assignments.find((item) => item.workPackageId === 11)?.employeeId).toBe(1);
     expect(preview.optimizerDiagnostics.strategy)
-      .toBe("PLACEMENT_AWARE_BOUNDED_BEAM_SEARCH");
+      .toBe("BUDGET_AWARE_MULTI_WEEK_BEAM_SEARCH");
     expect(preview.optimizerDiagnostics.greedyBaseline.plannedMinutes).toBe(480);
     expect(preview.optimizerDiagnostics.optimized.plannedMinutes).toBe(960);
     expect(preview.optimizerDiagnostics.improvement.plannedMinutes).toBe(480);
@@ -216,7 +216,7 @@ describe("multi-week portfolio planner", () => {
     expect(preview.unplannedWorkPackages).toEqual([]);
     expect(preview.assignments.find((item) => item.workPackageId === 10)?.employeeId).toBe(2);
     expect(preview.assignments.find((item) => item.workPackageId === 11)?.employeeId).toBe(1);
-    expect(preview.optimizerDiagnostics.algorithmVersion).toBe("portfolio-beam-v2");
+    expect(preview.optimizerDiagnostics.algorithmVersion).toBe("portfolio-beam-v3");
     expect(preview.optimizerDiagnostics.v1Baseline.plannedMinutes).toBe(480);
     expect(preview.optimizerDiagnostics.optimized.plannedMinutes).toBe(960);
     expect(preview.optimizerDiagnostics.improvementVsV1.plannedMinutes).toBe(480);
@@ -282,7 +282,7 @@ describe("multi-week portfolio planner", () => {
     expect(preview.metrics.overtimeMinutes).toBe(0);
   });
 
-  it("includes retained commitments and exposes signed budget variance", async () => {
+  it("moves flexible work to a later week before creating overtime or a burn-cap breach", async () => {
     const retainedAllocation = {
       id: 102,
       employeeId: 1,
@@ -315,23 +315,45 @@ describe("multi-week portfolio planner", () => {
     });
 
     expect(preview.metrics).toMatchObject({
-      regularMinutes: 480,
-      overtimeMinutes: 240,
-      regularCostCents: 48_000,
-      overtimeCostCents: 36_000,
+      regularMinutes: 720,
+      overtimeMinutes: 0,
+      regularCostCents: 72_000,
+      overtimeCostCents: 0,
       retainedCostCents: 24_000,
-      workPackageCostCents: 60_000,
-      plannedCostCents: 84_000,
+      workPackageCostCents: 48_000,
+      plannedCostCents: 72_000,
     });
     expect(preview.projectCostSummaries[0]).toMatchObject({
-      knownCostCents: 84_000,
-      totalBudgetVarianceCents: -16_000,
+      knownCostCents: 72_000,
+      totalBudgetVarianceCents: -28_000,
       forecastComplete: true,
     });
     expect(preview.projectCostSummaries[0]?.weeks[0]).toMatchObject({
-      plannedCostCents: 84_000,
-      weeklyBudgetVarianceCents: 34_000,
+      plannedCostCents: 48_000,
+      weeklyBudgetVarianceCents: -2_000,
     });
+    expect(preview.projectCostSummaries[0]?.weeks[1]).toMatchObject({
+      plannedCostCents: 24_000,
+      weeklyBudgetVarianceCents: -26_000,
+    });
+  });
+
+  it("spreads budgeted scope across weeks when coverage and deadlines stay equivalent", async () => {
+    const preview = await buildPortfolioPlanPreview(database(
+      [project([workPackage({ remainingMinutes: 960, estimatedMinutes: 960 })], {
+        weeklyLaborBudgetCents: 50_000,
+      })],
+    ), {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 2,
+      replaceGenerated: true,
+    });
+
+    expect(preview.metrics.proposedWorkMinutes).toBe(960);
+    expect(preview.unplannedWorkPackages).toEqual([]);
+    expect(preview.projectCostSummaries[0]?.weeks.map((week) => week.plannedCostCents))
+      .toEqual([48_000, 48_000]);
+    expect(preview.optimizerDiagnostics.objectiveVector.weeklyBudgetOverrunCents).toBe(0);
   });
 
   it("topologically schedules a successor after its predecessor", async () => {
