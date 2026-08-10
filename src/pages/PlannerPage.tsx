@@ -98,6 +98,8 @@ export function PlannerPage() {
     return optimized.plannedMinutes > greedyBaseline.plannedMinutes
       || optimized.unplannedMinutes < greedyBaseline.unplannedMinutes
       || optimized.overtimeMinutes < greedyBaseline.overtimeMinutes
+      || optimized.weeklyBudgetOverrunCents < greedyBaseline.weeklyBudgetOverrunCents
+      || optimized.balancedPeakMinutes < greedyBaseline.balancedPeakMinutes
       || optimized.laborCostCents < greedyBaseline.laborCostCents;
   }, [preview]);
 
@@ -165,25 +167,25 @@ export function PlannerPage() {
 
       <section className="planner-dashboard-section">
         <div className="planner-section-heading">
-          <div><span>Cost control</span><h3>Labor cost and budget variance</h3><p>Committed and proposed labor are kept separate from actual work already logged.</p></div>
-          <div className={`budget-verdict ${budgetPortfolio.projects > 0 && budgetPortfolio.varianceCents > 0 ? "budget-over" : "budget-under"}`}><span>Budgeted projects</span><strong>{budgetPortfolio.projects === 0 ? "No total budgets" : varianceLabel(budgetPortfolio.varianceCents)}</strong><small>{budgetPortfolio.projects} with total budgets</small></div>
+          <div><span>Cost control</span><h3>Labor cost and budget variance</h3><p>Actual means confirmed Work Logs. Horizon plan means committed allocations plus this preview. Known cost is their sum.</p></div>
+          <div className={`budget-verdict ${budgetPortfolio.projects > 0 && budgetPortfolio.varianceCents > 0 ? "budget-over" : "budget-under"}`}><span>Net total-budget headroom</span><strong>{budgetPortfolio.projects === 0 ? "No total budgets" : varianceLabel(budgetPortfolio.varianceCents)}</strong><small>Across {budgetPortfolio.projects} budgeted projects</small></div>
         </div>
 
         <div className="cost-breakdown-grid">
-          <div><span>Regular labor</span><strong>{money(preview.metrics.regularCostCents)}</strong><small>{hours(preview.metrics.regularMinutes)}</small></div>
+          <div><span>Regular-hours cost</span><strong>{money(preview.metrics.regularCostCents)}</strong><small>{hours(preview.metrics.regularMinutes)} scheduled</small></div>
           <div className={preview.metrics.overtimeCostCents > 0 ? "cost-alert" : ""}><span>Overtime</span><strong>{money(preview.metrics.overtimeCostCents)}</strong><small>{hours(preview.metrics.overtimeMinutes)}</small></div>
-          <div><span>Fixed coverage</span><strong>{money(preview.metrics.fixedCoverageCostCents)}</strong><small>operational commitments</small></div>
-          <div><span>Work packages</span><strong>{money(preview.metrics.workPackageCostCents)}</strong><small>optimized project scope</small></div>
+          <div><span>Fixed coverage cost</span><strong>{money(preview.metrics.fixedCoverageCostCents)}</strong><small>recurring operational commitments</small></div>
+          <div><span>Work Package cost</span><strong>{money(preview.metrics.workPackageCostCents)}</strong><small>project scope proposed by optimizer</small></div>
           <div><span>Average planned rate</span><strong>{moneyRate(preview.metrics.averagePlannedHourlyCostCents)}</strong><small>per allocated hour</small></div>
         </div>
 
         <div className="project-budget-list">
-          <div className="project-budget-header"><span>Project</span><span>Actual</span><span>Planned</span><span>Known cost</span><span>Total budget</span><span>Variance</span></div>
+          <div className="project-budget-header"><span>Project</span><span>Actual logged</span><span>Horizon plan</span><span>Known total</span><span>Total budget</span><span>Headroom</span></div>
           {preview.projectCostSummaries.map((project) => {
             const usage = project.totalBudgetCents && project.totalBudgetCents > 0 ? Math.min(100, project.knownCostCents / project.totalBudgetCents * 100) : 0;
             return <article className="project-budget-row" key={project.projectId}>
               <div className="project-budget-main">
-                <div><strong>{project.projectName}</strong><small>{project.knownCostCents === 0 ? "No forecasted labor" : project.forecastComplete ? "Forecast complete" : "Partial forecast"}</small></div>
+                <div><strong>{project.projectName}</strong><small>{project.knownCostCents === 0 ? "No scheduled labor" : project.forecastComplete ? "All current scope scheduled" : "Partial scope forecast"}</small></div>
                 <span>{money(project.actualCostCents)}</span>
                 <span>{money(project.plannedCostCents)}<small>{money(project.workPackageCostCents)} scope</small></span>
                 <span>{money(project.knownCostCents)}</span>
@@ -194,7 +196,7 @@ export function PlannerPage() {
               <div className="week-budget-strip">
                 {project.weeks.map((week) => {
                   const weeklyUsage = week.weeklyBudgetCents && week.weeklyBudgetCents > 0 ? Math.min(100, week.plannedCostCents / week.weeklyBudgetCents * 100) : 0;
-                  return <div key={week.weekStart} title={`${week.weekStart}: ${varianceLabel(week.weeklyBudgetVarianceCents)}`}><span>{new Date(`${week.weekStart}T12:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short" })}</span><i><b className={week.weeklyBudgetVarianceCents !== null && week.weeklyBudgetVarianceCents > 0 ? "week-over" : ""} style={{ width: `${weeklyUsage}%` }} /></i><small>{money(week.plannedCostCents)}</small></div>;
+                  return <div key={week.weekStart} title={`${week.weekStart}: ${varianceLabel(week.weeklyBudgetVarianceCents)}`}><span>{new Date(`${week.weekStart}T12:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short" })}</span><i><b className={week.weeklyBudgetVarianceCents !== null && week.weeklyBudgetVarianceCents > 0 ? "week-over" : ""} style={{ width: `${weeklyUsage}%` }} /></i><small>{money(week.plannedCostCents)}{week.weeklyBudgetCents === null ? " · no cap" : ` / ${money(week.weeklyBudgetCents)} cap`}</small></div>;
                 })}
               </div>
             </article>;
@@ -213,6 +215,8 @@ export function PlannerPage() {
           <div><strong>Planned work</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.plannedMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.plannedMinutes)}</span><b>{gainHours(preview.optimizerDiagnostics.optimized.plannedMinutes - preview.optimizerDiagnostics.greedyBaseline.plannedMinutes)}</b></div>
           <div><strong>Unplanned work</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.unplannedMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.unplannedMinutes)}</span><b>{gainHours(preview.optimizerDiagnostics.greedyBaseline.unplannedMinutes - preview.optimizerDiagnostics.optimized.unplannedMinutes, "reduced")}</b></div>
           <div><strong>Overtime</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.overtimeMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.overtimeMinutes)}</span><b>{gainHours(preview.optimizerDiagnostics.greedyBaseline.overtimeMinutes - preview.optimizerDiagnostics.optimized.overtimeMinutes, "reduced")}</b></div>
+          <div><strong>Weekly cap overrun</strong><span>{money(preview.optimizerDiagnostics.greedyBaseline.weeklyBudgetOverrunCents)}</span><span>{money(preview.optimizerDiagnostics.optimized.weeklyBudgetOverrunCents)}</span><b>{costOutcome(preview.optimizerDiagnostics.greedyBaseline.weeklyBudgetOverrunCents, preview.optimizerDiagnostics.optimized.weeklyBudgetOverrunCents)}</b></div>
+          <div><strong>Peak balanced-project work</strong><span>{hours(preview.optimizerDiagnostics.greedyBaseline.balancedPeakMinutes)}</span><span>{hours(preview.optimizerDiagnostics.optimized.balancedPeakMinutes)}</span><b>{gainHours(preview.optimizerDiagnostics.greedyBaseline.balancedPeakMinutes - preview.optimizerDiagnostics.optimized.balancedPeakMinutes, "lower")}</b></div>
           <div><strong>Labor cost</strong><span>{money(preview.optimizerDiagnostics.greedyBaseline.laborCostCents)}</span><span>{money(preview.optimizerDiagnostics.optimized.laborCostCents)}</span><b>{costOutcome(preview.optimizerDiagnostics.greedyBaseline.laborCostCents, preview.optimizerDiagnostics.optimized.laborCostCents)}</b></div>
         </div>
 
