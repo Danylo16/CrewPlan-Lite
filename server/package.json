@@ -9,6 +9,8 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "seed:demo": "tsx src/scripts/seedDemo.ts",
+    "benchmark:portfolio": "tsx src/scripts/benchmarkPortfolioOptimizer.ts",
+    "benchmark:portfolio:json": "tsx src/scripts/benchmarkPortfolioOptimizer.ts --json",
     "test:watch": "vitest"
   },
   "license": "MIT",

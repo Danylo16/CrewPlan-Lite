@@ -26,6 +26,8 @@ export interface SchedulingEmployee {
   id: number;
   preferredWeeklyMinutes: number;
   maxWeeklyMinutes: number;
+  hourlyCostCents: number;
+  overtimeRateBasisPoints: number;
   skills: EmployeeSkillInput[];
   availability: AvailabilityInterval[];
 }
@@ -92,6 +94,11 @@ export interface SchedulingMetrics {
   unfilledPositions: number;
   coveragePercent: number;
   assignedMinutes: number;
+  regularMinutes: number;
+  overtimeMinutes: number;
+  regularCostCents: number;
+  overtimeCostCents: number;
+  laborCostCents: number;
   penalty: number;
   exploredNodes: number;
   searchLimitReached: boolean;

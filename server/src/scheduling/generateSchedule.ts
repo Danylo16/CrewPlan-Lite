@@ -1,5 +1,6 @@
 import { getRejectionReason } from "./constraints.js";
 import {
+  allocationCostBreakdown,
   preferredOvertimePenalty,
   UNFILLED_PENALTY,
   workloadImbalancePenalty,
@@ -31,6 +32,22 @@ interface SearchState {
   weeklyMinutes: Map<number, number>;
   intervals: Map<number, ScheduledInterval[]>;
   basePenalty: number;
+  unfilledByPriority: Record<StaffingSlot["priority"], number>;
+  regularMinutes: number;
+  overtimeMinutes: number;
+  regularCostCents: number;
+  overtimeCostCents: number;
+}
+
+interface ObjectiveScore {
+  unfilledCritical: number;
+  unfilledHigh: number;
+  unfilledNormal: number;
+  unfilledLow: number;
+  overtimeMinutes: number;
+  overtimeCostCents: number;
+  laborCostCents: number;
+  workloadImbalance: number;
 }
 
 interface SearchBest {
@@ -38,6 +55,30 @@ interface SearchBest {
   unfilledSlots: StaffingSlot[];
   weeklyMinutes: Map<number, number>;
   penalty: number;
+  score: ObjectiveScore;
+  regularMinutes: number;
+  overtimeMinutes: number;
+  regularCostCents: number;
+  overtimeCostCents: number;
+}
+
+const objectiveKeys: Array<keyof ObjectiveScore> = [
+  "unfilledCritical",
+  "unfilledHigh",
+  "unfilledNormal",
+  "unfilledLow",
+  "overtimeMinutes",
+  "overtimeCostCents",
+  "laborCostCents",
+  "workloadImbalance",
+];
+
+function compareObjective(first: ObjectiveScore, second: ObjectiveScore) {
+  for (const key of objectiveKeys) {
+    const difference = first[key] - second[key];
+    if (difference !== 0) return difference;
+  }
+  return 0;
 }
 
 function compareSlots(first: StaffingSlot, second: StaffingSlot) {
@@ -95,6 +136,11 @@ function createInitialState(
     weeklyMinutes,
     intervals,
     basePenalty: 0,
+    unfilledByPriority: { CRITICAL: 0, HIGH: 0, NORMAL: 0, LOW: 0 },
+    regularMinutes: 0,
+    overtimeMinutes: 0,
+    regularCostCents: 0,
+    overtimeCostCents: 0,
   };
 }
 
@@ -110,6 +156,11 @@ function cloneState(state: SearchState): SearchState {
       ]),
     ),
     basePenalty: state.basePenalty,
+    unfilledByPriority: { ...state.unfilledByPriority },
+    regularMinutes: state.regularMinutes,
+    overtimeMinutes: state.overtimeMinutes,
+    regularCostCents: state.regularCostCents,
+    overtimeCostCents: state.overtimeCostCents,
   };
 }
 
@@ -126,6 +177,15 @@ function assignSlot(
     previousMinutes,
     nextMinutes,
   );
+  const cost = allocationCostBreakdown(
+    employee,
+    previousMinutes,
+    slot.durationMinutes,
+  );
+  state.regularMinutes += cost.regularMinutes;
+  state.overtimeMinutes += cost.overtimeMinutes;
+  state.regularCostCents += cost.regularCostCents;
+  state.overtimeCostCents += cost.overtimeCostCents;
   state.weeklyMinutes.set(employee.id, nextMinutes);
   state.intervals.get(employee.id)?.push(slot);
   state.assignments.push({
@@ -141,6 +201,7 @@ function assignSlot(
 
 function markUnfilled(state: SearchState, slot: StaffingSlot) {
   state.unfilledSlots.push(slot);
+  state.unfilledByPriority[slot.priority] += 1;
   state.basePenalty += UNFILLED_PENALTY[slot.priority];
 }
 
@@ -169,8 +230,21 @@ function getCandidates(
         secondMinutes,
         secondMinutes + slot.durationMinutes,
       );
+      const firstCost = allocationCostBreakdown(
+        first,
+        firstMinutes,
+        slot.durationMinutes,
+      );
+      const secondCost = allocationCostBreakdown(
+        second,
+        secondMinutes,
+        slot.durationMinutes,
+      );
 
       return firstPenalty - secondPenalty
+        || firstCost.overtimeMinutes - secondCost.overtimeMinutes
+        || firstCost.overtimeCostCents - secondCost.overtimeCostCents
+        || firstCost.totalCostCents - secondCost.totalCostCents
         || firstMinutes - secondMinutes
         || first.id - second.id;
     });
@@ -182,6 +256,25 @@ function totalPenalty(
 ) {
   return state.basePenalty
     + workloadImbalancePenalty(employees, state.weeklyMinutes);
+}
+
+function objectiveScore(
+  employees: SchedulingEmployee[],
+  state: SearchState,
+  includeImbalance = true,
+): ObjectiveScore {
+  return {
+    unfilledCritical: state.unfilledByPriority.CRITICAL,
+    unfilledHigh: state.unfilledByPriority.HIGH,
+    unfilledNormal: state.unfilledByPriority.NORMAL,
+    unfilledLow: state.unfilledByPriority.LOW,
+    overtimeMinutes: state.overtimeMinutes,
+    overtimeCostCents: state.overtimeCostCents,
+    laborCostCents: state.regularCostCents + state.overtimeCostCents,
+    workloadImbalance: includeImbalance
+      ? workloadImbalancePenalty(employees, state.weeklyMinutes)
+      : 0,
+  };
 }
 
 function greedySolution(
@@ -268,6 +361,11 @@ export function generateSchedule(input: SchedulingInput): SchedulingResult {
     unfilledSlots: greedy.unfilledSlots,
     weeklyMinutes: greedy.weeklyMinutes,
     penalty: totalPenalty(employees, greedy),
+    score: objectiveScore(employees, greedy),
+    regularMinutes: greedy.regularMinutes,
+    overtimeMinutes: greedy.overtimeMinutes,
+    regularCostCents: greedy.regularCostCents,
+    overtimeCostCents: greedy.overtimeCostCents,
   };
 
   function search(slotIndex: number, state: SearchState) {
@@ -278,18 +376,27 @@ export function generateSchedule(input: SchedulingInput): SchedulingResult {
 
     exploredNodes += 1;
 
-    if (state.basePenalty >= best.penalty) {
+    if (compareObjective(
+      objectiveScore(employees, state, false),
+      { ...best.score, workloadImbalance: 0 },
+    ) >= 0) {
       return;
     }
 
     if (slotIndex === slots.length) {
       const penalty = totalPenalty(employees, state);
-      if (penalty < best.penalty) {
+      const score = objectiveScore(employees, state);
+      if (compareObjective(score, best.score) < 0) {
         best = {
           assignments: [...state.assignments],
           unfilledSlots: [...state.unfilledSlots],
           weeklyMinutes: new Map(state.weeklyMinutes),
           penalty,
+          score,
+          regularMinutes: state.regularMinutes,
+          overtimeMinutes: state.overtimeMinutes,
+          regularCostCents: state.regularCostCents,
+          overtimeCostCents: state.overtimeCostCents,
         };
       }
       return;
@@ -344,6 +451,11 @@ export function generateSchedule(input: SchedulingInput): SchedulingResult {
           total + assignment.endMinute - assignment.startMinute,
         0,
       ),
+      regularMinutes: best.regularMinutes,
+      overtimeMinutes: best.overtimeMinutes,
+      regularCostCents: best.regularCostCents,
+      overtimeCostCents: best.overtimeCostCents,
+      laborCostCents: best.regularCostCents + best.overtimeCostCents,
       penalty: best.penalty,
       exploredNodes,
       searchLimitReached,
