@@ -1035,6 +1035,70 @@ textarea {
 .planner-summary small { color: #7a8496; }
 .planner-summary .metric-alert { border-color: #fed7aa; background: #fffaf5; }
 .planner-summary .metric-alert strong { color: #c2410c; }
+.planner-dashboard-section { margin-bottom: 20px; padding: 22px; border: 1px solid #dfe4ec; border-radius: 14px; background: #fff; box-shadow: 0 8px 24px rgb(32 45 76 / 5%); }
+.planner-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 20px; }
+.planner-section-heading > div:first-child > span { color: #5267df; font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.planner-section-heading h3 { margin: 5px 0 4px; font-size: 20px; }
+.planner-section-heading p { margin: 0; color: #697386; font-size: 12px; line-height: 1.5; }
+.budget-verdict { min-width: 180px; padding: 11px 14px; border: 1px solid #bbf7d0; border-radius: 10px; background: #f0fdf4; }
+.budget-verdict span,
+.budget-verdict strong,
+.budget-verdict small { display: block; }
+.budget-verdict span { color: #6b7280; font-size: 9px; letter-spacing: .06em; text-transform: uppercase; }
+.budget-verdict strong { margin: 4px 0 2px; color: #166534; }
+.budget-verdict small { color: #6b7280; font-size: 10px; }
+.budget-verdict.budget-over { border-color: #fecaca; background: #fef2f2; }
+.budget-verdict.budget-over strong { color: #b91c1c; }
+.cost-breakdown-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 20px; }
+.cost-breakdown-grid > div { padding: 14px; border: 1px solid #e6eaf0; border-radius: 10px; background: #f8fafc; }
+.cost-breakdown-grid span,
+.cost-breakdown-grid strong,
+.cost-breakdown-grid small { display: block; }
+.cost-breakdown-grid span { color: #697386; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+.cost-breakdown-grid strong { margin: 7px 0 3px; font-size: 19px; }
+.cost-breakdown-grid small { color: #7a8496; font-size: 10px; }
+.cost-breakdown-grid .cost-alert { border-color: #fed7aa; background: #fff7ed; }
+.cost-breakdown-grid .cost-alert strong { color: #c2410c; }
+.project-budget-list { overflow: hidden; border: 1px solid #e1e6ee; border-radius: 11px; }
+.project-budget-header,
+.project-budget-main { display: grid; grid-template-columns: minmax(170px, 1.5fr) repeat(5, minmax(90px, 1fr)); gap: 12px; align-items: center; }
+.project-budget-header { padding: 9px 14px; color: #788397; background: #f4f6f9; font-size: 9px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.project-budget-row { padding: 13px 14px; border-top: 1px solid #e8ebf0; }
+.project-budget-row:first-of-type { border-top: 0; }
+.project-budget-main { font-size: 12px; }
+.project-budget-main strong,
+.project-budget-main small { display: block; }
+.project-budget-main small { margin-top: 3px; color: #8a93a3; font-size: 9px; }
+.project-budget-main .variance-under { color: #15803d; font-weight: 700; }
+.project-budget-main .variance-over { color: #b91c1c; font-weight: 700; }
+.budget-progress { overflow: hidden; height: 5px; margin-top: 10px; border-radius: 99px; background: #edf0f4; }
+.budget-progress span { display: block; height: 100%; border-radius: inherit; background: #5267df; }
+.budget-progress.budget-progress-over span { background: #dc2626; }
+.week-budget-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 8px; margin-top: 10px; }
+.week-budget-strip > div span,
+.week-budget-strip > div small { display: block; color: #7a8496; font-size: 8px; }
+.week-budget-strip i { display: block; overflow: hidden; height: 4px; margin: 4px 0; border-radius: 99px; background: #edf0f4; }
+.week-budget-strip b { display: block; height: 100%; background: #7c8cff; }
+.week-budget-strip b.week-over { background: #dc2626; }
+.optimizer-dashboard { background: linear-gradient(145deg, #fff 0%, #f7f8ff 100%); }
+.optimizer-version { min-width: 230px; text-align: right; }
+.optimizer-version strong,
+.optimizer-version span { display: block; }
+.optimizer-version strong { color: #3449bd; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
+.optimizer-version span { margin-top: 4px; color: #7a8496; font-size: 9px; text-transform: capitalize; }
+.optimizer-comparison { overflow: hidden; border: 1px solid #dfe4ec; border-radius: 10px; background: #fff; }
+.optimizer-comparison > div { display: grid; grid-template-columns: minmax(160px, 1.4fr) repeat(3, minmax(90px, 1fr)); gap: 12px; padding: 10px 14px; border-top: 1px solid #edf0f4; font-size: 12px; }
+.optimizer-comparison > div:first-child { border-top: 0; }
+.optimizer-comparison .optimizer-comparison-header { color: #788397; background: #f4f6f9; font-size: 9px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.optimizer-comparison > div b { color: #3449bd; }
+.optimizer-facts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 9px; margin-top: 12px; }
+.optimizer-facts > div { padding: 11px 12px; border: 1px solid #e1e6ee; border-radius: 9px; background: rgb(255 255 255 / 70%); }
+.optimizer-facts span,
+.optimizer-facts strong { display: block; }
+.optimizer-facts span { color: #788397; font-size: 9px; text-transform: uppercase; }
+.optimizer-facts strong { margin-top: 4px; font-size: 13px; }
+.optimizer-facts .search-limit { border-color: #fecaca; background: #fef2f2; }
+.optimizer-facts .search-limit strong { color: #b91c1c; }
 .planner-warnings { display: grid; gap: 8px; margin-bottom: 20px; padding: 16px; border: 1px solid #fde68a; border-radius: 12px; background: #fffbeb; }
 .planner-warnings > strong { color: #854d0e; }
 .planner-warnings > div { display: grid; grid-template-columns: 180px 1fr; gap: 12px; align-items: center; }
@@ -1071,11 +1135,24 @@ textarea {
 @media (max-width: 1050px) {
   .planner-controls { grid-template-columns: 1fr 1fr; }
   .planner-summary { grid-template-columns: repeat(2, 1fr); }
+  .cost-breakdown-grid { grid-template-columns: repeat(3, 1fr); }
+  .project-budget-list { overflow-x: auto; }
+  .project-budget-header,
+  .project-budget-main { min-width: 820px; }
+  .optimizer-facts { grid-template-columns: repeat(3, 1fr); }
 }
 
 @media (max-width: 700px) {
   .planner-controls,
   .planner-summary { grid-template-columns: 1fr; }
+  .planner-dashboard-section { padding: 16px; }
+  .planner-section-heading { flex-direction: column; }
+  .budget-verdict,
+  .optimizer-version { width: 100%; text-align: left; }
+  .cost-breakdown-grid,
+  .optimizer-facts { grid-template-columns: 1fr 1fr; }
+  .optimizer-comparison { overflow-x: auto; }
+  .optimizer-comparison > div { min-width: 560px; }
   .planner-warnings > div { grid-template-columns: 1fr; }
   .planner-actions { align-items: stretch; flex-direction: column; }
   .planner-actions button { width: 100%; }
