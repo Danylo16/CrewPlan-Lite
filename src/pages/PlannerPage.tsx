@@ -36,7 +36,10 @@ function weekOf(value: string) {
   const local = new Date(date.getFullYear(), date.getMonth(), date.getDate());
   const day = local.getDay() || 7;
   local.setDate(local.getDate() - day + 1);
-  return local.toISOString().slice(0, 10);
+  const year = local.getFullYear();
+  const month = String(local.getMonth() + 1).padStart(2, "0");
+  const dateOfMonth = String(local.getDate()).padStart(2, "0");
+  return `${year}-${month}-${dateOfMonth}`;
 }
 
 export function PlannerPage() {
@@ -159,12 +162,12 @@ export function PlannerPage() {
             const usage = project.totalBudgetCents && project.totalBudgetCents > 0 ? Math.min(100, project.knownCostCents / project.totalBudgetCents * 100) : 0;
             return <article className="project-budget-row" key={project.projectId}>
               <div className="project-budget-main">
-                <div><strong>{project.projectName}</strong><small>{project.forecastComplete ? "Forecast complete" : "Partial forecast"}</small></div>
+                <div><strong>{project.projectName}</strong><small>{project.knownCostCents === 0 ? "No forecasted labor" : project.forecastComplete ? "Forecast complete" : "Partial forecast"}</small></div>
                 <span>{money(project.actualCostCents)}</span>
                 <span>{money(project.plannedCostCents)}<small>{money(project.workPackageCostCents)} scope</small></span>
                 <span>{money(project.knownCostCents)}</span>
                 <span>{project.totalBudgetCents === null ? "Not set" : money(project.totalBudgetCents)}</span>
-                <span className={project.totalBudgetVarianceCents !== null && project.totalBudgetVarianceCents > 0 ? "variance-over" : "variance-under"}>{varianceLabel(project.totalBudgetVarianceCents)}</span>
+                <span className={project.totalBudgetVarianceCents === null ? "variance-neutral" : project.totalBudgetVarianceCents > 0 ? "variance-over" : "variance-under"}>{varianceLabel(project.totalBudgetVarianceCents)}</span>
               </div>
               {project.totalBudgetCents !== null && <div className={`budget-progress ${project.totalBudgetVarianceCents !== null && project.totalBudgetVarianceCents > 0 ? "budget-progress-over" : ""}`}><span style={{ width: `${usage}%` }} /></div>}
               <div className="week-budget-strip">

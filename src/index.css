@@ -1071,6 +1071,7 @@ textarea {
 .project-budget-main small { margin-top: 3px; color: #8a93a3; font-size: 9px; }
 .project-budget-main .variance-under { color: #15803d; font-weight: 700; }
 .project-budget-main .variance-over { color: #b91c1c; font-weight: 700; }
+.project-budget-main .variance-neutral { color: #697386; font-weight: 600; }
 .budget-progress { overflow: hidden; height: 5px; margin-top: 10px; border-radius: 99px; background: #edf0f4; }
 .budget-progress span { display: block; height: 100%; border-radius: inherit; background: #5267df; }
 .budget-progress.budget-progress-over span { background: #dc2626; }
@@ -1127,7 +1128,7 @@ textarea {
 .unplanned-panel h3 { margin-bottom: 12px; }
 .unplanned-panel > div { display: flex; justify-content: space-between; gap: 20px; padding: 11px 0; border-top: 1px solid #edf0f4; }
 .unplanned-panel span { display: block; margin-top: 3px; color: #9a3412; font-size: 12px; }
-.planner-actions { position: sticky; z-index: 5; bottom: 18px; display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 24px; padding: 14px 16px; border: 1px solid #dfe4ec; border-radius: 12px; background: rgb(255 255 255 / 94%); box-shadow: 0 10px 35px rgb(24 35 58 / 16%); backdrop-filter: blur(10px); }
+.planner-actions { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 24px; padding: 14px 16px; border: 1px solid #dfe4ec; border-radius: 12px; background: #fff; box-shadow: 0 10px 35px rgb(24 35 58 / 10%); }
 .planner-actions strong,
 .planner-actions span { display: block; }
 .planner-actions span { margin-top: 3px; color: #697386; font-size: 12px; }
