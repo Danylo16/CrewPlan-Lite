@@ -153,11 +153,91 @@ describe("multi-week portfolio planner", () => {
     expect(preview.unplannedWorkPackages).toEqual([]);
     expect(preview.assignments.find((item) => item.workPackageId === 10)?.employeeId).toBe(2);
     expect(preview.assignments.find((item) => item.workPackageId === 11)?.employeeId).toBe(1);
-    expect(preview.optimizerDiagnostics.strategy).toBe("BOUNDED_BEAM_SEARCH");
+    expect(preview.optimizerDiagnostics.strategy)
+      .toBe("PLACEMENT_AWARE_BOUNDED_BEAM_SEARCH");
     expect(preview.optimizerDiagnostics.greedyBaseline.plannedMinutes).toBe(480);
     expect(preview.optimizerDiagnostics.optimized.plannedMinutes).toBe(960);
     expect(preview.optimizerDiagnostics.improvement.plannedMinutes).toBe(480);
     expect(preview.optimizerDiagnostics.exploredStates).toBeGreaterThan(0);
+  });
+
+  it("branches on employee placement when dependencies force package order", async () => {
+    const reactPackage = workPackage({
+      id: 10,
+      name: "Architecture groundwork",
+      requiredSkillId: 1,
+      sortOrder: 0,
+    });
+    const devOpsPackage = workPackage({
+      id: 11,
+      name: "Production deployment",
+      requiredSkillId: 2,
+      sortOrder: 1,
+      incomingDependencies: [{
+        predecessorId: 10,
+        successorId: 11,
+        lagMinutes: 0,
+        predecessor: {
+          id: 10,
+          name: "Architecture groundwork",
+          status: "TODO",
+        },
+      }],
+    });
+    const preview = await buildPortfolioPlanPreview(database(
+      [project([reactPackage, devOpsPackage])],
+      [],
+      [
+        employee({
+          id: 1,
+          name: "Anna multi-skilled",
+          preferredWeeklyMinutes: 480,
+          maxWeeklyMinutes: 480,
+          skills: [
+            { employeeId: 1, skillId: 1, level: 5 },
+            { employeeId: 1, skillId: 2, level: 5 },
+          ],
+        }),
+        employee({
+          id: 2,
+          name: "Marko React-only",
+          preferredWeeklyMinutes: 480,
+          maxWeeklyMinutes: 480,
+          skills: [{ employeeId: 2, skillId: 1, level: 5 }],
+        }),
+      ],
+    ), {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 1,
+      replaceGenerated: true,
+    });
+
+    expect(preview.metrics.proposedWorkMinutes).toBe(960);
+    expect(preview.unplannedWorkPackages).toEqual([]);
+    expect(preview.assignments.find((item) => item.workPackageId === 10)?.employeeId).toBe(2);
+    expect(preview.assignments.find((item) => item.workPackageId === 11)?.employeeId).toBe(1);
+    expect(preview.optimizerDiagnostics.algorithmVersion).toBe("portfolio-beam-v2");
+    expect(preview.optimizerDiagnostics.v1Baseline.plannedMinutes).toBe(480);
+    expect(preview.optimizerDiagnostics.optimized.plannedMinutes).toBe(960);
+    expect(preview.optimizerDiagnostics.improvementVsV1.plannedMinutes).toBe(480);
+  });
+
+  it("produces a deterministic plan across repeated beam searches", async () => {
+    const planningDatabase = database([project()]);
+    const options = {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 2,
+      replaceGenerated: true,
+    };
+
+    const first = await buildPortfolioPlanPreview(planningDatabase, options);
+    const second = await buildPortfolioPlanPreview(planningDatabase, options);
+
+    expect(second.previewId).toBe(first.previewId);
+    expect(second.assignments).toEqual(first.assignments);
+    expect(second.unplannedWorkPackages).toEqual(first.unplannedWorkPackages);
+    expect(second.optimizerDiagnostics.objectiveVector)
+      .toEqual(first.optimizerDiagnostics.objectiveVector);
   });
 
   it("selects lower regular labor cost when coverage is equivalent", async () => {

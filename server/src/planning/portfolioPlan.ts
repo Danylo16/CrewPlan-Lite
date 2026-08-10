@@ -4,10 +4,8 @@ import type { Prisma } from "../generated/prisma/client.js";
 import { buildSchedulePreview } from "../scheduling/schedulePreview.js";
 import { allocationCostBreakdown } from "../scheduling/scoring.js";
 import { SCHEDULE_TIME_ZONE } from "../scheduling/timeAdapter.js";
-import {
-  allocatePortfolioWork,
-  type Interval,
-} from "./portfolioOptimizer.js";
+import { allocatePortfolioWork } from "./portfolioPlacementOptimizer.js";
+import type { Interval } from "./portfolioOptimizer.js";
 
 const MAX_HORIZON_WEEKS = 12;
 const MAX_WORK_PACKAGES = 150;

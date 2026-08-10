@@ -85,17 +85,17 @@ export interface UnplannedWorkPackage {
   reason: string;
 }
 
-function overlaps(first: Interval, second: Interval) {
+export function overlaps(first: Interval, second: Interval) {
   return first.startAt < second.endAt && first.endAt > second.startAt;
 }
 
-function weekKey(date: Date) {
+export function weekKey(date: Date) {
   return DateTime.fromJSDate(date, { zone: SCHEDULE_TIME_ZONE })
     .startOf("week")
     .toISODate()!;
 }
 
-function localDateAtMinute(date: DateTime, minute: number) {
+export function localDateAtMinute(date: DateTime, minute: number) {
   return date.startOf("day").plus({ minutes: minute }).toUTC().toJSDate();
 }
 
@@ -103,7 +103,7 @@ function priorityRank(priority: string) {
   return ({ CRITICAL: 0, HIGH: 1, NORMAL: 2, LOW: 3 } as Record<string, number>)[priority] ?? 2;
 }
 
-function freeSegments(window: Interval, occupied: Interval[]) {
+export function freeSegments(window: Interval, occupied: Interval[]) {
   const relevant = occupied.filter((item) => overlaps(item, window))
     .sort((a, b) => a.startAt.getTime() - b.startAt.getTime());
   const segments: Interval[] = [];
@@ -362,7 +362,7 @@ function allocatePortfolioWorkGreedy(
   return { assignments, unplannedWorkPackages };
 }
 
-type PackageEntry = ReturnType<typeof orderedWorkPackages>[number];
+export type PackageEntry = ReturnType<typeof orderedWorkPackages>[number];
 
 interface OrderState {
   ordered: PackageEntry[];
@@ -412,7 +412,7 @@ function readyEntries(state: OrderState) {
   return ready.length > 0 ? ready : state.pending;
 }
 
-function objectiveVector(
+export function objectiveVector(
   result: ReturnType<typeof allocatePortfolioWorkGreedy>,
   input: PortfolioOptimizerInput,
 ) {
@@ -478,7 +478,7 @@ function objectiveVector(
   ];
 }
 
-function compareVectors(first: number[], second: number[]) {
+export function compareVectors(first: number[], second: number[]) {
   for (let index = 0; index < Math.max(first.length, second.length); index += 1) {
     const difference = (first[index] ?? 0) - (second[index] ?? 0);
     if (difference !== 0) return difference;
@@ -486,7 +486,7 @@ function compareVectors(first: number[], second: number[]) {
   return 0;
 }
 
-function resultMetrics(result: ReturnType<typeof allocatePortfolioWorkGreedy>) {
+export function resultMetrics(result: ReturnType<typeof allocatePortfolioWorkGreedy>) {
   const plannedMinutes = result.assignments.reduce(
     (total, assignment) => total
       + Math.round((assignment.endAt.getTime() - assignment.startAt.getTime()) / 60_000),
@@ -509,10 +509,8 @@ function resultMetrics(result: ReturnType<typeof allocatePortfolioWorkGreedy>) {
   };
 }
 
-export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
-  const startedAt = Date.now();
+export function searchPackageOrders(input: PortfolioOptimizerInput) {
   const defaultOrder = orderedWorkPackages(input.projects);
-  const greedyBaseline = allocatePortfolioWorkGreedy(input, defaultOrder);
   let beam: OrderState[] = [{
     ordered: [],
     pending: [...defaultOrder],
@@ -554,6 +552,20 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
   for (const order of [defaultOrder, ...completedOrders]) {
     uniqueOrders.set(order.map((item) => item.workPackage.id).join(","), order);
   }
+  return {
+    defaultOrder,
+    uniqueOrders,
+    exploredStates,
+    prunedStates,
+    searchLimitReached,
+  };
+}
+
+export function allocatePortfolioWorkV1(input: PortfolioOptimizerInput) {
+  const startedAt = Date.now();
+  const orderSearch = searchPackageOrders(input);
+  const { defaultOrder, uniqueOrders } = orderSearch;
+  const greedyBaseline = allocatePortfolioWorkGreedy(input, defaultOrder);
   let best = greedyBaseline;
   let bestVector = objectiveVector(best, input);
   let bestSignature = defaultOrder.map((item) => item.workPackage.id).join(",");
@@ -579,10 +591,10 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
       algorithmVersion: "portfolio-beam-v1",
       strategy: "BOUNDED_BEAM_SEARCH",
       beamWidth: BEAM_WIDTH,
-      exploredStates,
-      prunedStates,
+      exploredStates: orderSearch.exploredStates,
+      prunedStates: orderSearch.prunedStates,
       evaluatedPlans: uniqueOrders.size,
-      searchLimitReached,
+      searchLimitReached: orderSearch.searchLimitReached,
       runtimeMs: Date.now() - startedAt,
       objectiveVector: {
         criticalUnplannedMinutes: bestVector[0],
