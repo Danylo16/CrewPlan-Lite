@@ -142,7 +142,7 @@ function orderedWorkPackages(projects: OptimizerProject[]) {
   return ordered;
 }
 
-function allocatePortfolioWorkGreedy(
+export function allocatePortfolioWorkGreedy(
   input: PortfolioOptimizerInput,
   packageOrder?: ReturnType<typeof orderedWorkPackages>,
 ) {

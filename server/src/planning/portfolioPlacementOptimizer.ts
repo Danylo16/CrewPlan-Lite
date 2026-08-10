@@ -23,10 +23,10 @@ import {
 const MAX_ASSIGNMENTS = 4_000;
 const MAX_BLOCK_MINUTES = 480;
 
-const PLACEMENT_BEAM_WIDTH = 24;
-const PACKAGE_VARIANT_WIDTH = 12;
-const PLACEMENT_BRANCH_WIDTH = 4;
-const PLACEMENT_ORDER_LIMIT = 8;
+const PLACEMENT_BEAM_WIDTH = 12;
+const PACKAGE_VARIANT_WIDTH = 6;
+const PLACEMENT_BRANCH_WIDTH = 3;
+const PLACEMENT_ORDER_LIMIT = 3;
 const MAX_PLACEMENT_STATES = 50_000;
 
 interface PlacementState {
@@ -268,20 +268,19 @@ function prunePlacementStates(
       ) < 0
     ) dominantBySignature.set(signature, state);
   }
-  const unique = [...dominantBySignature.values()].sort((first, second) =>
-    compareVectors(
-      objectiveVector({
-        assignments: first.assignments,
-        unplannedWorkPackages: first.unplannedWorkPackages,
-      }, input),
-      objectiveVector({
-        assignments: second.assignments,
-        unplannedWorkPackages: second.unplannedWorkPackages,
-      }, input),
-    ) || compareSignatures(placementSignature(first), placementSignature(second)),
+  const scored = [...dominantBySignature.values()].map((state) => ({
+    state,
+    signature: placementSignature(state),
+    vector: objectiveVector({
+      assignments: state.assignments,
+      unplannedWorkPackages: state.unplannedWorkPackages,
+    }, input),
+  })).sort((first, second) =>
+    compareVectors(first.vector, second.vector)
+      || compareSignatures(first.signature, second.signature),
   );
-  stats.prunedStates += Math.max(0, unique.length - width);
-  return unique.slice(0, width);
+  stats.prunedStates += Math.max(0, scored.length - width);
+  return scored.slice(0, width).map((item) => item.state);
 }
 
 function schedulePackageVariants(
