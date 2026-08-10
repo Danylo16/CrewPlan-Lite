@@ -23,10 +23,14 @@ import {
 const MAX_ASSIGNMENTS = 4_000;
 const MAX_BLOCK_MINUTES = 480;
 
-const PLACEMENT_BEAM_WIDTH = 12;
-const PACKAGE_VARIANT_WIDTH = 6;
+// Keep enough alternatives to recover from greedy placement decisions without
+// letting a realistic portfolio multiply into thousands of near-equivalent
+// states. The benchmark scenarios cover scarce skills, dependencies, cost,
+// overtime and mixed-portfolio scale for these bounds.
+const PLACEMENT_BEAM_WIDTH = 6;
+const PACKAGE_VARIANT_WIDTH = 3;
 const PLACEMENT_BRANCH_WIDTH = 3;
-const PLACEMENT_ORDER_LIMIT = 3;
+const PLACEMENT_ORDER_LIMIT = 2;
 const MAX_PLACEMENT_STATES = 50_000;
 
 interface PlacementState {
