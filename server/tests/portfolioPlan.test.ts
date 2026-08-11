@@ -166,6 +166,65 @@ describe("multi-week portfolio planner", () => {
       lostMinutes: 0,
       recoverable: true,
       additionalCostCents: 8_000,
+      reassignedAllocations: 1,
+      rescheduledAllocations: 0,
+    });
+  });
+
+  it("locally reschedules affected work when no same-slot replacement exists", async () => {
+    const planningDatabase = database(
+      [project()],
+      [],
+      [
+        employee({
+          id: 1,
+          name: "Monday primary",
+          hourlyCostCents: 4_000,
+          availability: [{
+            id: 1,
+            employeeId: 1,
+            dayOfWeek: "MONDAY",
+            startMinute: 9 * 60,
+            endMinute: 17 * 60,
+          }],
+        }),
+        employee({
+          id: 2,
+          name: "Tuesday replacement",
+          hourlyCostCents: 5_000,
+          availability: [{
+            id: 2,
+            employeeId: 2,
+            dayOfWeek: "TUESDAY",
+            startMinute: 9 * 60,
+            endMinute: 17 * 60,
+          }],
+          skills: [{ employeeId: 2, skillId: 1, level: 5 }],
+        }),
+      ],
+    );
+    const options = {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 1,
+      replaceGenerated: true,
+    };
+    const preview = await buildPortfolioPlanPreview(planningDatabase, options);
+    expect(preview.assignments[0]).toMatchObject({ employeeId: 1 });
+
+    const report = await buildPortfolioResilienceReport(planningDatabase, {
+      ...options,
+      previewId: preview.previewId,
+      inputVersion: preview.inputVersion,
+    });
+
+    expect(report).toMatchObject({ testedAbsences: 1, recoverableAbsences: 1 });
+    expect(report.scenarios[0]).toMatchObject({
+      employeeName: "Monday primary",
+      lostMinutes: 0,
+      recoverable: true,
+      reassignedAllocations: 1,
+      rescheduledAllocations: 1,
+      displacementMinutes: 1_440,
     });
   });
 
@@ -245,7 +304,7 @@ describe("multi-week portfolio planner", () => {
       optimizerRunner,
     });
 
-    expect(report.algorithmVersion).toBe("portfolio-resilience-n-minus-one-v3");
+    expect(report.algorithmVersion).toBe("portfolio-resilience-n-minus-one-v4");
     expect(report.testedAbsences).toBe(13);
     expect(report.scenarios).toHaveLength(13);
     expect(optimizerRunner).toHaveBeenCalledTimes(1);

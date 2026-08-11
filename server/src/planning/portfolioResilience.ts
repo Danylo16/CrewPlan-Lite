@@ -14,7 +14,8 @@ import {
 import type { PlanningDatabase, PortfolioPlanOptions } from "./portfolioPlan.js";
 
 const REPAIR_BEAM_WIDTH = 64;
-const MAX_REPLACEMENT_BRANCHES = 8;
+const MAX_REPLACEMENT_BRANCHES = 12;
+const REPAIR_SLOT_STEP_MINUTES = 30;
 
 export interface PortfolioResilienceOptions extends Omit<PortfolioPlanOptions, "excludedEmployeeIds"> {
   previewId: string;
@@ -28,6 +29,8 @@ interface RepairTask extends Interval {
   minimumSkillLevel: number;
   criticalKey: string | null;
   plannedCostCents: number;
+  movable: boolean;
+  latestEndAt: Date;
 }
 
 interface RepairState {
@@ -37,6 +40,8 @@ interface RepairState {
   lostCriticalKeys: Set<string>;
   replacementCostCents: number;
   replacementCount: number;
+  rescheduledCount: number;
+  displacementMinutes: number;
   signature: string;
 }
 
@@ -46,6 +51,16 @@ function roundPercent(value: number) {
 
 function minutes(interval: Interval) {
   return Math.round((interval.endAt.getTime() - interval.startAt.getTime()) / 60_000);
+}
+
+function localTargetEnd(value: Date | null) {
+  return value === null
+    ? null
+    : DateTime.fromJSDate(value, { zone: "utc" })
+      .setZone(SCHEDULE_TIME_ZONE)
+      .endOf("day")
+      .toUTC()
+      .toJSDate();
 }
 
 function cloneState(state: RepairState): RepairState {
@@ -61,6 +76,8 @@ function cloneState(state: RepairState): RepairState {
     lostCriticalKeys: new Set(state.lostCriticalKeys),
     replacementCostCents: state.replacementCostCents,
     replacementCount: state.replacementCount,
+    rescheduledCount: state.rescheduledCount,
+    displacementMinutes: state.displacementMinutes,
     signature: state.signature,
   };
 }
@@ -68,6 +85,7 @@ function cloneState(state: RepairState): RepairState {
 function compareRepairStates(first: RepairState, second: RepairState) {
   return first.lostCriticalKeys.size - second.lostCriticalKeys.size
     || first.lostMinutes - second.lostMinutes
+    || first.displacementMinutes - second.displacementMinutes
     || first.replacementCostCents - second.replacementCostCents
     || first.replacementCount - second.replacementCount
     || first.signature.localeCompare(second.signature);
@@ -114,16 +132,62 @@ function employeeQualifiedForTask(
 function employeeCanTakeTask(
   employee: OptimizerEmployee,
   task: RepairTask,
+  interval: Interval,
   state: RepairState,
 ) {
   if (task.kind === "RETAINED_COMMITMENT") return false;
   if (!employeeQualifiedForTask(employee, task)) return false;
-  if (!employeeAvailableForInterval(employee, task)) return false;
-  if ((state.occupiedByEmployee.get(employee.id) ?? []).some((item) => overlaps(item, task))) {
+  if (!employeeAvailableForInterval(employee, interval)) return false;
+  if ((state.occupiedByEmployee.get(employee.id) ?? []).some((item) => overlaps(item, interval))) {
     return false;
   }
-  const key = `${employee.id}:${weekKey(task.startAt)}`;
-  return (state.weeklyMinutes.get(key) ?? 0) + minutes(task) <= employee.maxWeeklyMinutes;
+  const key = `${employee.id}:${weekKey(interval.startAt)}`;
+  return (state.weeklyMinutes.get(key) ?? 0) + minutes(interval) <= employee.maxWeeklyMinutes;
+}
+
+function candidateIntervals(employee: OptimizerEmployee, task: RepairTask) {
+  const bySignature = new Map<string, Interval>();
+  function add(interval: Interval) {
+    if (interval.startAt < task.startAt || interval.endAt > task.latestEndAt) return;
+    if (!employeeAvailableForInterval(employee, interval)) return;
+    bySignature.set(`${interval.startAt.toISOString()}:${interval.endAt.toISOString()}`, interval);
+  }
+  add({ startAt: task.startAt, endAt: task.endAt });
+  if (!task.movable) return [...bySignature.values()];
+
+  const duration = minutes(task);
+  let day = DateTime.fromJSDate(task.startAt, { zone: "utc" })
+    .setZone(SCHEDULE_TIME_ZONE)
+    .startOf("day");
+  const finalDay = DateTime.fromJSDate(task.latestEndAt, { zone: "utc" })
+    .setZone(SCHEDULE_TIME_ZONE)
+    .startOf("day");
+  while (day <= finalDay) {
+    const dayOfWeek = [
+      "MONDAY",
+      "TUESDAY",
+      "WEDNESDAY",
+      "THURSDAY",
+      "FRIDAY",
+      "SATURDAY",
+      "SUNDAY",
+    ][day.weekday - 1];
+    for (const availability of employee.availability.filter(
+      (item) => item.dayOfWeek === dayOfWeek,
+    )) {
+      let cursor = day.plus({ minutes: availability.startMinute });
+      const windowEnd = day.plus({ minutes: availability.endMinute });
+      while (cursor.plus({ minutes: duration }) <= windowEnd) {
+        add({
+          startAt: cursor.toUTC().toJSDate(),
+          endAt: cursor.plus({ minutes: duration }).toUTC().toJSDate(),
+        });
+        cursor = cursor.plus({ minutes: REPAIR_SLOT_STEP_MINUTES });
+      }
+    }
+    day = day.plus({ days: 1 });
+  }
+  return [...bySignature.values()];
 }
 
 function repairCandidateAbsence(
@@ -133,6 +197,15 @@ function repairCandidateAbsence(
   baselineIntervals: Array<Interval & { employeeId: number }>,
 ) {
   const remainingEmployees = employees.filter((employee) => employee.id !== candidateId);
+  const intervalCache = new Map<string, Interval[]>();
+  function intervalsFor(employee: OptimizerEmployee, task: RepairTask) {
+    const key = `${employee.id}:${task.id}`;
+    const existing = intervalCache.get(key);
+    if (existing) return existing;
+    const intervals = candidateIntervals(employee, task);
+    intervalCache.set(key, intervals);
+    return intervals;
+  }
   const occupiedByEmployee = new Map<number, Interval[]>(
     remainingEmployees.map((employee) => [employee.id, []]),
   );
@@ -151,16 +224,18 @@ function repairCandidateAbsence(
     lostCriticalKeys: new Set(),
     replacementCostCents: 0,
     replacementCount: 0,
+    rescheduledCount: 0,
+    displacementMinutes: 0,
     signature: "",
   }];
   const orderedTasks = [...tasks].sort((first, second) => {
     const firstCandidates = remainingEmployees.filter((employee) =>
       employeeQualifiedForTask(employee, first)
-        && employeeAvailableForInterval(employee, first),
+        && intervalsFor(employee, first).length > 0,
     ).length;
     const secondCandidates = remainingEmployees.filter((employee) =>
       employeeQualifiedForTask(employee, second)
-        && employeeAvailableForInterval(employee, second),
+        && intervalsFor(employee, second).length > 0,
     ).length;
     return Number(second.criticalKey !== null) - Number(first.criticalKey !== null)
       || firstCandidates - secondCandidates
@@ -173,30 +248,39 @@ function repairCandidateAbsence(
     const expanded: RepairState[] = [];
     for (const state of beam) {
       const duration = minutes(task);
-      const candidates = remainingEmployees
-        .filter((employee) => employeeCanTakeTask(employee, task, state))
-        .map((employee) => {
-          const key = `${employee.id}:${weekKey(task.startAt)}`;
+      const candidates = remainingEmployees.flatMap((employee) =>
+        intervalsFor(employee, task).flatMap((interval) => {
+          if (!employeeCanTakeTask(employee, task, interval, state)) return [];
+          const key = `${employee.id}:${weekKey(interval.startAt)}`;
           const cost = allocationCostBreakdown(
             employee,
             state.weeklyMinutes.get(key) ?? 0,
             duration,
           ).totalCostCents;
-          return { employee, cost };
-        })
+          const displacement = Math.round(
+            Math.abs(interval.startAt.getTime() - task.startAt.getTime()) / 60_000,
+          );
+          return [{ employee, interval, cost, displacement }];
+        }),
+      )
         .sort((first, second) =>
-          first.cost - second.cost || first.employee.id - second.employee.id,
+          first.displacement - second.displacement
+          || first.cost - second.cost
+          || first.interval.startAt.getTime() - second.interval.startAt.getTime()
+          || first.employee.id - second.employee.id,
         )
         .slice(0, MAX_REPLACEMENT_BRANCHES);
 
-      for (const { employee, cost } of candidates) {
+      for (const { employee, interval, cost, displacement } of candidates) {
         const next = cloneState(state);
-        next.occupiedByEmployee.get(employee.id)?.push(task);
-        const key = `${employee.id}:${weekKey(task.startAt)}`;
+        next.occupiedByEmployee.get(employee.id)?.push(interval);
+        const key = `${employee.id}:${weekKey(interval.startAt)}`;
         next.weeklyMinutes.set(key, (next.weeklyMinutes.get(key) ?? 0) + duration);
         next.replacementCostCents += cost;
         next.replacementCount += 1;
-        next.signature += `${task.id}:${employee.id};`;
+        next.rescheduledCount += displacement === 0 ? 0 : 1;
+        next.displacementMinutes += displacement;
+        next.signature += `${task.id}:${employee.id}:${interval.startAt.toISOString()};`;
         expanded.push(next);
       }
 
@@ -307,9 +391,54 @@ export async function buildPortfolioResilienceReport(
   function addTask(employeeId: number, task: RepairTask) {
     tasksByEmployee.set(employeeId, [...(tasksByEmployee.get(employeeId) ?? []), task]);
   }
+  const firstAssignmentByPackage = new Map<number, Date>();
+  for (const assignment of [...baseline.assignments].sort((first, second) =>
+    new Date(first.startAt).getTime() - new Date(second.startAt).getTime(),
+  )) {
+    if (!firstAssignmentByPackage.has(assignment.workPackageId)) {
+      firstAssignmentByPackage.set(assignment.workPackageId, new Date(assignment.startAt));
+    }
+  }
+  const successorBoundaryByPackage = new Map<number, Date>();
+  for (const project of projects) {
+    for (const successor of project.workPackages) {
+      const successorStart = firstAssignmentByPackage.get(successor.id);
+      if (!successorStart) continue;
+      for (const dependency of successor.incomingDependencies) {
+        const predecessorBoundary = new Date(
+          successorStart.getTime() - dependency.lagMinutes * 60_000,
+        );
+        const existing = successorBoundaryByPackage.get(dependency.predecessorId);
+        if (!existing || predecessorBoundary < existing) {
+          successorBoundaryByPackage.set(dependency.predecessorId, predecessorBoundary);
+        }
+      }
+    }
+  }
   for (const assignment of baseline.assignments) {
     const entry = workPackageById.get(assignment.workPackageId);
     if (!entry) continue;
+    const originalEnd = new Date(assignment.endAt);
+    const laterSamePackageStart = baseline.assignments
+      .filter((item) =>
+        item.workPackageId === assignment.workPackageId
+          && new Date(item.startAt) > new Date(assignment.startAt),
+      )
+      .map((item) => new Date(item.startAt))
+      .sort((first, second) => first.getTime() - second.getTime())[0];
+    const boundaries = [
+      horizonEndExclusive,
+      localTargetEnd(entry.workPackage.targetEndDate),
+      entry.project.deadlineType === "NONE"
+        ? null
+        : localTargetEnd(entry.project.targetEndDate),
+      laterSamePackageStart ?? null,
+      successorBoundaryByPackage.get(assignment.workPackageId) ?? null,
+    ].filter((value): value is Date => value !== null);
+    const boundedEnd = boundaries.reduce(
+      (earliest, boundary) => boundary < earliest ? boundary : earliest,
+      horizonEndExclusive,
+    );
     addTask(assignment.employeeId, {
       id: `work:${assignment.workPackageId}:${assignment.startAt}:${assignment.employeeId}`,
       kind: "WORK_PACKAGE",
@@ -321,6 +450,8 @@ export async function buildPortfolioResilienceReport(
         ? `work-package:${assignment.workPackageId}`
         : null,
       plannedCostCents: assignment.plannedCostCents,
+      movable: true,
+      latestEndAt: boundedEnd < originalEnd ? originalEnd : boundedEnd,
     });
   }
   for (const assignment of baseline.fixedCoverageAssignments) {
@@ -336,6 +467,8 @@ export async function buildPortfolioResilienceReport(
         ? `fixed:${assignment.projectRequirementId}:${assignment.startAt}`
         : null,
       plannedCostCents: assignment.plannedCostCents,
+      movable: false,
+      latestEndAt: new Date(assignment.endAt),
     });
   }
   for (const shift of retainedShifts) {
@@ -350,6 +483,8 @@ export async function buildPortfolioResilienceReport(
         ? `retained:${shift.id}`
         : null,
       plannedCostCents: shift.plannedCostCents ?? 0,
+      movable: false,
+      latestEndAt: shift.endAt,
     });
   }
 
@@ -386,6 +521,9 @@ export async function buildPortfolioResilienceReport(
         ? repair.replacementCostCents - removedCostCents
         : null,
       recoverable: lostMinutes === 0 && criticalGapsAtRisk === 0,
+      reassignedAllocations: repair.replacementCount,
+      rescheduledAllocations: repair.rescheduledCount,
+      displacementMinutes: repair.displacementMinutes,
       runtimeMs: Date.now() - scenarioStartedAt,
     };
   });
@@ -415,8 +553,8 @@ export async function buildPortfolioResilienceReport(
     horizonStart: baseline.horizonStart,
     horizonEndExclusive: baseline.horizonEndExclusive,
     horizonWeeks: baseline.horizonWeeks,
-    algorithmVersion: "portfolio-resilience-n-minus-one-v3",
-    strategy: "DETERMINISTIC_INCREMENTAL_BASELINE_REPAIR",
+    algorithmVersion: "portfolio-resilience-n-minus-one-v4",
+    strategy: "DETERMINISTIC_BOUNDED_LOCAL_REPAIR",
     scorePercent: averageCoveragePercent,
     averageCoveragePercent,
     worstCaseCoveragePercent,
