@@ -87,6 +87,7 @@ export interface PortfolioOptimizerInput {
   futurePlannedIntervalsByPackage: Map<number, Interval[]>;
   planningProfile?: PlanningProfile;
   searchMode?: OptimizerSearchMode;
+  comparisonProfiles?: PlanningProfile[];
 }
 
 export interface UnplannedWorkPackage {

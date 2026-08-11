@@ -17,6 +17,7 @@ import {
   type OptimizerWorkPackage,
   type PackageEntry,
   type PlanAssignment,
+  type PlanningProfile,
   type PortfolioOptimizerInput,
   type UnplannedWorkPackage,
 } from "./portfolioOptimizer.js";
@@ -34,8 +35,22 @@ const PLACEMENT_BRANCH_WIDTH = 3;
 const PLACEMENT_ORDER_LIMIT = 2;
 const MAX_PLACEMENT_STATES = 50_000;
 const PLACEMENT_LOOKAHEAD_DAYS = 3;
+const PARETO_BEAM_WIDTH = 12;
+const PARETO_PACKAGE_VARIANT_WIDTH = 8;
+const PARETO_BRANCH_WIDTH = 8;
+const PARETO_ORDER_LIMIT = 2;
+const PARETO_MAX_PLACEMENT_STATES = 12_000;
 
 function placementLimits(input: PortfolioOptimizerInput) {
+  if ((input.comparisonProfiles?.length ?? 0) > 1) {
+    return {
+      beamWidth: PARETO_BEAM_WIDTH,
+      packageVariantWidth: PARETO_PACKAGE_VARIANT_WIDTH,
+      branchWidth: PARETO_BRANCH_WIDTH,
+      orderLimit: PARETO_ORDER_LIMIT,
+      maxStates: PARETO_MAX_PLACEMENT_STATES,
+    };
+  }
   return input.searchMode === "COMPARISON"
     ? {
       beamWidth: 3,
@@ -51,6 +66,18 @@ function placementLimits(input: PortfolioOptimizerInput) {
       orderLimit: PLACEMENT_ORDER_LIMIT,
       maxStates: MAX_PLACEMENT_STATES,
     };
+}
+
+function searchProfiles(input: PortfolioOptimizerInput) {
+  return input.comparisonProfiles?.length
+    ? input.comparisonProfiles
+    : [input.planningProfile ?? "BALANCED"];
+}
+
+function withProfile(input: PortfolioOptimizerInput, planningProfile: PlanningProfile) {
+  const singleProfileInput = { ...input };
+  delete singleProfileInput.comparisonProfiles;
+  return { ...singleProfileInput, planningProfile };
 }
 
 interface PlacementState {
@@ -166,10 +193,13 @@ function placementCandidates(
     (total, candidateProject) => total + candidateProject.workPackages.length,
     0,
   );
-  const lookaheadDays = (input.planningProfile ?? "BALANCED") === "COST_FIRST"
-    && portfolioScale <= 40
+  const profiles = searchProfiles(input);
+  const lookaheadDays = input.comparisonProfiles?.length
     ? PLACEMENT_LOOKAHEAD_DAYS
-    : 1;
+    : (input.planningProfile ?? "BALANCED") === "COST_FIRST"
+      && portfolioScale <= 40
+      ? PLACEMENT_LOOKAHEAD_DAYS
+      : 1;
   const collected = [] as Array<{
     employee: PortfolioOptimizerInput["employees"][number];
     interval: Interval;
@@ -252,8 +282,11 @@ function placementCandidates(
       && day.diff(firstCandidateDay, "days").days >= lookaheadDays - 1
     ) break;
   }
-  return collected.sort((first, second) => {
-    const profile = input.planningProfile ?? "BALANCED";
+  const compareForProfile = (
+    first: typeof collected[number],
+    second: typeof collected[number],
+    profile: PlanningProfile,
+  ) => {
     if (profile === "COST_FIRST") {
       return first.cost.overtimeMinutes - second.cost.overtimeMinutes
         || first.cost.totalCostCents - second.cost.totalCostCents
@@ -273,7 +306,29 @@ function placementCandidates(
       || first.employeeScarcity - second.employeeScarcity
       || first.cost.totalCostCents - second.cost.totalCostCents
       || first.employee.id - second.employee.id;
-  });
+  };
+  if (profiles.length === 1) {
+    return collected.sort((first, second) =>
+      compareForProfile(first, second, profiles[0]!),
+    );
+  }
+
+  const ranked = profiles.map((profile) =>
+    [...collected].sort((first, second) => compareForProfile(first, second, profile)),
+  );
+  const union: typeof collected = [];
+  const seen = new Set<string>();
+  for (let rank = 0; rank < collected.length; rank += 1) {
+    for (const candidates of ranked) {
+      const candidate = candidates[rank];
+      if (!candidate) continue;
+      const key = `${candidate.employee.id}:${candidate.interval.startAt.toISOString()}:${candidate.interval.endAt.toISOString()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      union.push(candidate);
+    }
+  }
+  return union;
 }
 
 function variantVector(variant: PackageVariant, input: PortfolioOptimizerInput) {
@@ -286,7 +341,7 @@ function variantVector(variant: PackageVariant, input: PortfolioOptimizerInput) 
   ];
 }
 
-function placementSignature(state: PlacementState) {
+function placementSignature(state: Pick<PlacementState, "assignments">) {
   return state.assignments.map((assignment) => [
     assignment.workPackageId,
     assignment.employeeId,
@@ -299,6 +354,65 @@ function placementSignature(state: PlacementState) {
 
 function compareSignatures(first: string, second: string) {
   return first < second ? -1 : first > second ? 1 : 0;
+}
+
+function commonParetoVector(
+  result: { assignments: PlanAssignment[]; unplannedWorkPackages: UnplannedWorkPackage[] },
+  input: PortfolioOptimizerInput,
+) {
+  const components = objectiveComponents(result, input);
+  return [
+    components.criticalUnplannedMinutes,
+    components.highUnplannedMinutes,
+    components.normalUnplannedMinutes,
+    components.lowUnplannedMinutes,
+    components.hardDeadlineExposureMinutes,
+    components.softDeadlineExposureMinutes,
+    components.overtimeMinutes,
+    components.laborCostCents,
+    components.singlePointExposureMinutes,
+    components.maxRecoveryShortfallMinutes,
+    components.skillConcentrationBasisPoints,
+    components.imbalanceBasisPoints,
+  ];
+}
+
+function dominates(first: number[], second: number[]) {
+  let strictlyBetter = false;
+  for (let index = 0; index < Math.max(first.length, second.length); index += 1) {
+    const difference = (first[index] ?? 0) - (second[index] ?? 0);
+    if (difference > 0) return false;
+    if (difference < 0) strictlyBetter = true;
+  }
+  return strictlyBetter;
+}
+
+function roundRobinByProfile<T>(
+  items: T[],
+  width: number,
+  profiles: PlanningProfile[],
+  vector: (item: T, profile: PlanningProfile) => number[],
+  signature: (item: T) => string,
+) {
+  if (items.length <= width) return items;
+  const rankings = profiles.map((profile) => [...items].sort((first, second) =>
+    compareVectors(vector(first, profile), vector(second, profile))
+      || compareSignatures(signature(first), signature(second)),
+  ));
+  const selected: T[] = [];
+  const seen = new Set<string>();
+  for (let rank = 0; selected.length < width && rank < items.length; rank += 1) {
+    for (const ranking of rankings) {
+      const item = ranking[rank];
+      if (!item) continue;
+      const key = signature(item);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      selected.push(item);
+      if (selected.length === width) break;
+    }
+  }
+  return selected;
 }
 
 function prunePlacementStates(
@@ -329,7 +443,34 @@ function prunePlacementStates(
       ) < 0
     ) dominantBySignature.set(signature, state);
   }
-  const scored = [...dominantBySignature.values()].map((state) => ({
+  const unique = [...dominantBySignature.values()];
+  const profiles = searchProfiles(input);
+  if (profiles.length > 1) {
+    const vectors = new Map(unique.map((state) => [
+      state,
+      commonParetoVector({
+        assignments: state.assignments,
+        unplannedWorkPackages: state.unplannedWorkPackages,
+      }, input),
+    ]));
+    const frontier = unique.filter((candidate) => !unique.some((other) =>
+      other !== candidate && dominates(vectors.get(other)!, vectors.get(candidate)!),
+    ));
+    stats.dominancePrunedStates += unique.length - frontier.length;
+    const selected = roundRobinByProfile(
+      frontier,
+      width,
+      profiles,
+      (state, profile) => objectiveVector({
+        assignments: state.assignments,
+        unplannedWorkPackages: state.unplannedWorkPackages,
+      }, withProfile(input, profile)),
+      placementSignature,
+    );
+    stats.prunedStates += Math.max(0, frontier.length - selected.length);
+    return selected;
+  }
+  const scored = unique.map((state) => ({
     state,
     signature: placementSignature(state),
     vector: objectiveVector({
@@ -342,6 +483,52 @@ function prunePlacementStates(
   );
   stats.prunedStates += Math.max(0, scored.length - width);
   return scored.slice(0, width).map((item) => item.state);
+}
+
+function prunePackageVariants(
+  variants: PackageVariant[],
+  input: PortfolioOptimizerInput,
+  width: number,
+  stats: PlacementSearchStats,
+) {
+  const profiles = searchProfiles(input);
+  if (profiles.length === 1) {
+    variants.sort((first, second) =>
+      compareVectors(variantVector(first, input), variantVector(second, input))
+      || compareSignatures(
+        placementSignature(first.state),
+        placementSignature(second.state),
+      ),
+    );
+    stats.prunedStates += Math.max(0, variants.length - width);
+    return variants.slice(0, width);
+  }
+  const vectors = new Map(variants.map((variant) => [
+    variant,
+    [variant.remaining, ...commonParetoVector({
+      assignments: variant.state.assignments,
+      unplannedWorkPackages: variant.state.unplannedWorkPackages,
+    }, input)],
+  ]));
+  const frontier = variants.filter((candidate) => !variants.some((other) =>
+    other !== candidate && dominates(vectors.get(other)!, vectors.get(candidate)!),
+  ));
+  stats.dominancePrunedStates += variants.length - frontier.length;
+  const selected = roundRobinByProfile(
+    frontier,
+    width,
+    profiles,
+    (variant, profile) => [
+      variant.remaining,
+      ...objectiveVector({
+        assignments: variant.state.assignments,
+        unplannedWorkPackages: variant.state.unplannedWorkPackages,
+      }, withProfile(input, profile)),
+    ],
+    (variant) => `${variant.remaining}:${placementSignature(variant.state)}`,
+  );
+  stats.prunedStates += Math.max(0, frontier.length - selected.length);
+  return selected;
 }
 
 function schedulePackageVariants(
@@ -453,15 +640,12 @@ function schedulePackageVariants(
       if (stats.searchLimitReached) break;
     }
     if (stats.searchLimitReached) break;
-    expanded.sort((first, second) =>
-      compareVectors(variantVector(first, input), variantVector(second, input))
-      || compareSignatures(
-        placementSignature(first.state),
-        placementSignature(second.state),
-      ),
+    variants = prunePackageVariants(
+      expanded,
+      input,
+      limits.packageVariantWidth,
+      stats,
     );
-    stats.prunedStates += Math.max(0, expanded.length - limits.packageVariantWidth);
-    variants = expanded.slice(0, limits.packageVariantWidth);
   }
   if (completed.length > 0) return completed;
   const fallback = clonePlacementState(baseState);
@@ -565,4 +749,110 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
       },
     },
   };
+}
+
+export function allocatePortfolioScenarioPlans(
+  input: PortfolioOptimizerInput,
+  profiles: PlanningProfile[],
+) {
+  const startedAt = Date.now();
+  const sharedInput: PortfolioOptimizerInput = {
+    ...input,
+    planningProfile: "BALANCED",
+    searchMode: "COMPARISON",
+    comparisonProfiles: profiles,
+  };
+  const orderSearch = searchPackageOrders(sharedInput);
+  const baselines = new Map(profiles.map((profile) => {
+    const profileInput = withProfile(sharedInput, profile);
+    return [profile, allocatePortfolioWorkV1(profileInput, orderSearch)] as const;
+  }));
+  const stats: PlacementSearchStats = {
+    exploredStates: 0,
+    prunedStates: 0,
+    dominancePrunedStates: 0,
+    searchLimitReached: false,
+  };
+  const limits = placementLimits(sharedInput);
+  const candidateBySignature = new Map<string, {
+    assignments: PlanAssignment[];
+    unplannedWorkPackages: UnplannedWorkPackage[];
+  }>();
+  for (const baseline of baselines.values()) {
+    candidateBySignature.set(placementSignature({ assignments: baseline.assignments }), {
+      assignments: baseline.assignments,
+      unplannedWorkPackages: baseline.unplannedWorkPackages,
+    });
+  }
+  const orders = [...orderSearch.uniqueOrders.values()].slice(0, limits.orderLimit);
+  for (const order of orders) {
+    for (const candidate of placementSearchForOrder(sharedInput, order, stats)) {
+      candidateBySignature.set(placementSignature({ assignments: candidate.assignments }), candidate);
+    }
+    if (stats.searchLimitReached) break;
+  }
+  const candidates = [...candidateBySignature.values()];
+  const sharedRuntimeMs = Date.now() - startedAt;
+  const results = new Map<PlanningProfile, ReturnType<typeof allocatePortfolioWork>>();
+
+  for (const profile of profiles) {
+    const profileInput = withProfile(sharedInput, profile);
+    const v1 = baselines.get(profile)!;
+    let best = candidates[0] ?? {
+      assignments: v1.assignments,
+      unplannedWorkPackages: v1.unplannedWorkPackages,
+    };
+    let bestVector = objectiveVector(best, profileInput);
+    let bestSignature = placementSignature({ assignments: best.assignments });
+    for (const candidate of candidates.slice(1)) {
+      const vector = objectiveVector(candidate, profileInput);
+      const signature = placementSignature({ assignments: candidate.assignments });
+      if (
+        compareVectors(vector, bestVector) < 0
+        || (compareVectors(vector, bestVector) === 0 && signature < bestSignature)
+      ) {
+        best = candidate;
+        bestVector = vector;
+        bestSignature = signature;
+      }
+    }
+    const greedyMetrics = v1.optimizerDiagnostics.greedyBaseline;
+    const v1Metrics = resultMetrics(v1);
+    const optimizedMetrics = resultMetrics(best);
+    results.set(profile, {
+      ...best,
+      optimizerDiagnostics: {
+        algorithmVersion: "portfolio-pareto-beam-v1",
+        strategy: "SHARED_MULTI_OBJECTIVE_PARETO_BEAM_SEARCH",
+        planningProfile: profile,
+        searchMode: "COMPARISON",
+        beamWidth: limits.beamWidth,
+        packageVariantWidth: limits.packageVariantWidth,
+        branchWidth: limits.branchWidth,
+        exploredStates: orderSearch.exploredStates + stats.exploredStates,
+        prunedStates: orderSearch.prunedStates + stats.prunedStates,
+        dominancePrunedStates: stats.dominancePrunedStates,
+        evaluatedPlans: candidates.length,
+        searchLimitReached: orderSearch.searchLimitReached || stats.searchLimitReached,
+        runtimeMs: sharedRuntimeMs,
+        objectiveVector: objectiveComponents(best, profileInput),
+        greedyBaseline: greedyMetrics,
+        v1Baseline: v1Metrics,
+        optimized: optimizedMetrics,
+        improvement: {
+          plannedMinutes: optimizedMetrics.plannedMinutes - greedyMetrics.plannedMinutes,
+          unplannedMinutes: greedyMetrics.unplannedMinutes - optimizedMetrics.unplannedMinutes,
+          overtimeMinutes: greedyMetrics.overtimeMinutes - optimizedMetrics.overtimeMinutes,
+          laborCostCents: greedyMetrics.laborCostCents - optimizedMetrics.laborCostCents,
+        },
+        improvementVsV1: {
+          plannedMinutes: optimizedMetrics.plannedMinutes - v1Metrics.plannedMinutes,
+          unplannedMinutes: v1Metrics.unplannedMinutes - optimizedMetrics.unplannedMinutes,
+          overtimeMinutes: v1Metrics.overtimeMinutes - optimizedMetrics.overtimeMinutes,
+          laborCostCents: v1Metrics.laborCostCents - optimizedMetrics.laborCostCents,
+        },
+      },
+    });
+  }
+  return results;
 }

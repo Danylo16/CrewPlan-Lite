@@ -257,7 +257,7 @@ export function PlannerPage() {
     {applied && <div className="planner-success"><strong>Plan applied.</strong><span>{applied.createdShifts} allocations created, {applied.deletedShifts} generated allocations replaced.</span></div>}
 
     {comparison && <section className="planner-dashboard-section scenario-comparison">
-      <div className="planner-section-heading"><div><span>Decision support</span><h3>Same portfolio, four planning objectives</h3><p>This is a fast bounded shortlist built from one portfolio snapshot. Review recomputes the selected objective with the full optimizer before Apply or N−1 validation.</p></div><div className="scenario-runtime"><span>Shortlist runtime</span><strong>{(comparison.runtimeMs / 1000).toFixed(1)}s</strong></div></div>
+      <div className="planner-section-heading"><div><span>Decision support</span><h3>One Pareto frontier, four planning objectives</h3><p>All objectives select from the same multi-objective candidate pool, so cost, deadline and resilience trade-offs are directly comparable. Review recomputes the selected objective with the full optimizer before Apply or N−1 validation.</p></div><div className="scenario-runtime"><span>Pareto search runtime</span><strong>{(comparison.runtimeMs / 1000).toFixed(1)}s</strong></div></div>
       <div className="scenario-grid">{comparison.scenarios.map((scenario) => {
         const content = PROFILE_CONTENT[scenario.planningProfile];
         const deadlineExposure = scenario.hardDeadlineExposureMinutes + scenario.softDeadlineExposureMinutes;

@@ -1,6 +1,9 @@
 import { DateTime } from "luxon";
 import { describe, expect, it } from "vitest";
-import { allocatePortfolioWork } from "../src/planning/portfolioPlacementOptimizer.js";
+import {
+  allocatePortfolioScenarioPlans,
+  allocatePortfolioWork,
+} from "../src/planning/portfolioPlacementOptimizer.js";
 import type {
   OptimizerEmployee,
   OptimizerProject,
@@ -162,5 +165,32 @@ describe("portfolio planning profiles", () => {
       branchWidth: 2,
     });
     expect(comparison.optimizerDiagnostics.optimized.plannedMinutes).toBe(960);
+  });
+
+  it("selects profile trade-offs from one shared Pareto candidate pool", () => {
+    const employees = [
+      employee(1, "Available before deadline", 8_000, ["MONDAY"]),
+      employee(2, "Cheaper after deadline", 4_000, ["TUESDAY"]),
+    ];
+    const portfolioProject = project(480, new Date("2026-08-10T00:00:00.000Z"));
+    const plans = allocatePortfolioScenarioPlans(
+      input("BALANCED", employees, portfolioProject),
+      ["BALANCED", "COST_FIRST", "DEADLINE_FIRST", "RESILIENCE_FIRST"],
+    );
+    const costFirst = plans.get("COST_FIRST")!;
+    const deadlineFirst = plans.get("DEADLINE_FIRST")!;
+
+    expect(costFirst.assignments[0]?.employeeId).toBe(2);
+    expect(deadlineFirst.assignments[0]?.employeeId).toBe(1);
+    expect(costFirst.optimizerDiagnostics.optimized.laborCostCents)
+      .toBeLessThan(deadlineFirst.optimizerDiagnostics.optimized.laborCostCents);
+    expect(costFirst.optimizerDiagnostics).toMatchObject({
+      algorithmVersion: "portfolio-pareto-beam-v1",
+      strategy: "SHARED_MULTI_OBJECTIVE_PARETO_BEAM_SEARCH",
+      evaluatedPlans: 2,
+    });
+    expect(new Set([...plans.values()].map(
+      (plan) => plan.optimizerDiagnostics.exploredStates,
+    )).size).toBe(1);
   });
 });

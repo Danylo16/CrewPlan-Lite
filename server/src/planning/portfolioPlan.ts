@@ -4,7 +4,10 @@ import type { Prisma } from "../generated/prisma/client.js";
 import { buildSchedulePreview } from "../scheduling/schedulePreview.js";
 import { allocationCostBreakdown } from "../scheduling/scoring.js";
 import { SCHEDULE_TIME_ZONE } from "../scheduling/timeAdapter.js";
-import { allocatePortfolioWork } from "./portfolioPlacementOptimizer.js";
+import {
+  allocatePortfolioScenarioPlans,
+  allocatePortfolioWork,
+} from "./portfolioPlacementOptimizer.js";
 import type {
   Interval,
   OptimizerSearchMode,
@@ -26,6 +29,7 @@ export interface PortfolioPlanOptions {
   excludedEmployeeIds?: number[];
   planningProfile?: PlanningProfile;
   optimizerSearchMode?: OptimizerSearchMode;
+  optimizerRunner?: typeof allocatePortfolioWork;
 }
 
 const PLANNING_PROFILES: PlanningProfile[] = [
@@ -203,7 +207,7 @@ export async function buildPortfolioPlanPreview(
     ]);
   }
 
-  const { assignments, unplannedWorkPackages, optimizerDiagnostics } = allocatePortfolioWork({
+  const optimizerInput = {
     start,
     end,
     employees,
@@ -224,7 +228,10 @@ export async function buildPortfolioPlanPreview(
     futurePlannedIntervalsByPackage,
     planningProfile: options.planningProfile ?? "BALANCED",
     searchMode: options.optimizerSearchMode ?? "FULL",
-  });
+  };
+  const { assignments, unplannedWorkPackages, optimizerDiagnostics } = (
+    options.optimizerRunner ?? allocatePortfolioWork
+  )(optimizerInput);
   const retainedAllocations: CostedInterval[] = availablePreservedHorizonShifts.map((shift) => ({
     employeeId: shift.employeeId,
     projectId: shift.projectId,
@@ -520,12 +527,18 @@ export async function buildPortfolioScenarioComparison(
   const startedAt = Date.now();
   const cachedDatabase = snapshotDatabase(database);
   const scenarios = [];
+  let sharedPlans: ReturnType<typeof allocatePortfolioScenarioPlans> | null = null;
+  const sharedRunner: typeof allocatePortfolioWork = (input) => {
+    sharedPlans ??= allocatePortfolioScenarioPlans(input, PLANNING_PROFILES);
+    return sharedPlans.get(input.planningProfile ?? "BALANCED")!;
+  };
 
   for (const planningProfile of PLANNING_PROFILES) {
     const preview = await buildPortfolioPlanPreview(cachedDatabase, {
       ...options,
       planningProfile,
       optimizerSearchMode: "COMPARISON",
+      optimizerRunner: sharedRunner,
     });
     const objective = preview.optimizerDiagnostics.objectiveVector;
     scenarios.push({
@@ -561,7 +574,7 @@ export async function buildPortfolioScenarioComparison(
     horizonStart: options.horizonStart,
     horizonWeeks: options.horizonWeeks,
     replaceGenerated: options.replaceGenerated,
-    comparisonMode: "BOUNDED_SHORTLIST" as const,
+    comparisonMode: "SHARED_PARETO_FRONTIER" as const,
     runtimeMs: Date.now() - startedAt,
     scenarios,
   };

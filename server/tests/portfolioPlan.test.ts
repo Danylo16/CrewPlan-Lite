@@ -116,6 +116,10 @@ describe("multi-week portfolio planner", () => {
       "RESILIENCE_FIRST",
     ]);
     expect(comparison.scenarios.every((scenario) => scenario.proposedWorkMinutes === 480)).toBe(true);
+    expect(comparison.comparisonMode).toBe("SHARED_PARETO_FRONTIER");
+    expect(new Set(comparison.scenarios.map(
+      (scenario) => scenario.optimizerRuntimeMs,
+    )).size).toBe(1);
     expect(planningDatabase.employee.findMany).toHaveBeenCalledTimes(2);
     expect(planningDatabase.project.findMany).toHaveBeenCalledTimes(1);
     expect(planningDatabase.projectRequirement.findMany).toHaveBeenCalledTimes(1);

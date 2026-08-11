@@ -297,6 +297,7 @@ export interface PortfolioScenarioComparison {
   horizonStart: string;
   horizonWeeks: number;
   replaceGenerated: boolean;
+  comparisonMode: "SHARED_PARETO_FRONTIER";
   runtimeMs: number;
   scenarios: PortfolioPlanningScenario[];
 }
