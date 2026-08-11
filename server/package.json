@@ -12,6 +12,7 @@
     "seed:optimizer-demo": "tsx src/scripts/seedOptimizerDemo.ts",
     "benchmark:portfolio": "tsx src/scripts/benchmarkPortfolioOptimizer.ts",
     "benchmark:portfolio:json": "tsx src/scripts/benchmarkPortfolioOptimizer.ts --json",
+    "benchmark:profiles": "tsx src/scripts/benchmarkPlanningProfiles.ts",
     "test:watch": "vitest"
   },
   "license": "MIT",

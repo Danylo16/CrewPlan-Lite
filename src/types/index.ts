@@ -233,9 +233,16 @@ export interface PortfolioPlanCostBaseline {
   laborCostCents: number;
 }
 
+export type PlanningProfile =
+  | "BALANCED"
+  | "COST_FIRST"
+  | "DEADLINE_FIRST"
+  | "RESILIENCE_FIRST";
+
 export interface PortfolioOptimizerDiagnostics {
   algorithmVersion: string;
   strategy: string;
+  planningProfile: PlanningProfile;
   beamWidth: number;
   packageVariantWidth: number;
   branchWidth: number;
@@ -250,10 +257,14 @@ export interface PortfolioOptimizerDiagnostics {
     highUnplannedMinutes: number;
     normalUnplannedMinutes: number;
     lowUnplannedMinutes: number;
-    deadlineExposureMinutes: number;
+    hardDeadlineExposureMinutes: number;
+    softDeadlineExposureMinutes: number;
     overtimeMinutes: number;
     laborCostCents: number;
     imbalanceBasisPoints: number;
+    singlePointExposureMinutes: number;
+    maxRecoveryShortfallMinutes: number;
+    skillConcentrationBasisPoints: number;
   };
   greedyBaseline: PortfolioPlanCostBaseline;
   v1Baseline: PortfolioPlanCostBaseline;
@@ -330,6 +341,7 @@ export interface PortfolioPlanPreview {
   horizonStart: string;
   horizonEndExclusive: string;
   horizonWeeks: number;
+  planningProfile: PlanningProfile;
   timezone: string;
   replaceGenerated: boolean;
   assignments: PortfolioPlanAssignment[];

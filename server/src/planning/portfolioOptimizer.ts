@@ -67,6 +67,12 @@ export interface OptimizerProject {
   workPackages: OptimizerWorkPackage[];
 }
 
+export type PlanningProfile =
+  | "BALANCED"
+  | "COST_FIRST"
+  | "DEADLINE_FIRST"
+  | "RESILIENCE_FIRST";
+
 export interface PortfolioOptimizerInput {
   start: DateTime;
   end: DateTime;
@@ -75,6 +81,7 @@ export interface PortfolioOptimizerInput {
   occupiedIntervals: Array<Interval & { employeeId: number }>;
   futurePlannedByPackage: Map<number, number>;
   futurePlannedIntervalsByPackage: Map<number, Interval[]>;
+  planningProfile?: PlanningProfile;
 }
 
 export interface UnplannedWorkPackage {
@@ -264,6 +271,34 @@ export function allocatePortfolioWorkGreedy(
           return segment.endAt > segment.startAt && used < employee.maxWeeklyMinutes;
         })
         .sort((first, second) => {
+          if (input.planningProfile === "COST_FIRST") {
+            const firstUsed = weeklyMinutes.get(
+              `${first.employee.id}:${weekKey(first.segment.startAt)}`,
+            ) ?? 0;
+            const secondUsed = weeklyMinutes.get(
+              `${second.employee.id}:${weekKey(second.segment.startAt)}`,
+            ) ?? 0;
+            const firstCost = allocationCostBreakdown(first.employee, firstUsed, 60);
+            const secondCost = allocationCostBreakdown(second.employee, secondUsed, 60);
+            return firstCost.overtimeMinutes - secondCost.overtimeMinutes
+              || firstCost.totalCostCents - secondCost.totalCostCents
+              || first.segment.startAt.getTime() - second.segment.startAt.getTime()
+              || first.employee.id - second.employee.id;
+          }
+          if (input.planningProfile === "RESILIENCE_FIRST") {
+            const firstUsed = weeklyMinutes.get(
+              `${first.employee.id}:${weekKey(first.segment.startAt)}`,
+            ) ?? 0;
+            const secondUsed = weeklyMinutes.get(
+              `${second.employee.id}:${weekKey(second.segment.startAt)}`,
+            ) ?? 0;
+            return firstUsed / Math.max(1, first.employee.maxWeeklyMinutes)
+              - secondUsed / Math.max(1, second.employee.maxWeeklyMinutes)
+              || first.employee.skills.length - second.employee.skills.length
+              || first.segment.startAt.getTime() - second.segment.startAt.getTime()
+              || first.employee.hourlyCostCents - second.employee.hourlyCostCents
+              || first.employee.id - second.employee.id;
+          }
           if (project.optimizationStrategy === "MINIMIZE_COST") {
             const firstUsed = weeklyMinutes.get(
               `${first.employee.id}:${weekKey(first.segment.startAt)}`,
@@ -416,6 +451,68 @@ export function objectiveVector(
   result: ReturnType<typeof allocatePortfolioWorkGreedy>,
   input: PortfolioOptimizerInput,
 ) {
+  const profile = input.planningProfile ?? "BALANCED";
+  const components = objectiveComponents(result, input, profile === "RESILIENCE_FIRST");
+  if (profile === "COST_FIRST") {
+    return [
+      components.criticalUnplannedMinutes,
+      components.highUnplannedMinutes,
+      components.normalUnplannedMinutes,
+      components.lowUnplannedMinutes,
+      components.hardDeadlineExposureMinutes,
+      components.overtimeMinutes,
+      components.laborCostCents,
+      components.softDeadlineExposureMinutes,
+      components.imbalanceBasisPoints,
+    ];
+  }
+  if (profile === "DEADLINE_FIRST") {
+    return [
+      components.criticalUnplannedMinutes,
+      components.hardDeadlineExposureMinutes,
+      components.softDeadlineExposureMinutes,
+      components.highUnplannedMinutes,
+      components.normalUnplannedMinutes,
+      components.lowUnplannedMinutes,
+      components.overtimeMinutes,
+      components.laborCostCents,
+      components.imbalanceBasisPoints,
+    ];
+  }
+  if (profile === "RESILIENCE_FIRST") {
+    return [
+      components.criticalUnplannedMinutes,
+      components.highUnplannedMinutes,
+      components.normalUnplannedMinutes,
+      components.lowUnplannedMinutes,
+      components.hardDeadlineExposureMinutes,
+      components.singlePointExposureMinutes,
+      components.maxRecoveryShortfallMinutes,
+      components.skillConcentrationBasisPoints,
+      components.softDeadlineExposureMinutes,
+      components.overtimeMinutes,
+      components.laborCostCents,
+      components.imbalanceBasisPoints,
+    ];
+  }
+  return [
+    components.criticalUnplannedMinutes,
+    components.highUnplannedMinutes,
+    components.normalUnplannedMinutes,
+    components.lowUnplannedMinutes,
+    components.hardDeadlineExposureMinutes,
+    components.softDeadlineExposureMinutes,
+    components.overtimeMinutes,
+    components.laborCostCents,
+    components.imbalanceBasisPoints,
+  ];
+}
+
+export function objectiveComponents(
+  result: ReturnType<typeof allocatePortfolioWorkGreedy>,
+  input: PortfolioOptimizerInput,
+  includeResilienceProxy = true,
+) {
   const projectById = new Map(input.projects.map((project) => [project.id, project]));
   const workPackageById = new Map(
     input.projects.flatMap((project) => project.workPackages.map((workPackage) => [
@@ -424,12 +521,21 @@ export function objectiveVector(
     ] as const)),
   );
   const unplannedByPriority = [0, 0, 0, 0];
+  let hardDeadlineExposureMinutes = 0;
+  let softDeadlineExposureMinutes = 0;
   for (const item of result.unplannedWorkPackages) {
     const project = projectById.get(item.projectId);
     unplannedByPriority[priorityRank(project?.priority ?? "NORMAL")]! += item.unplannedMinutes;
+    const entry = workPackageById.get(item.workPackageId);
+    const deadline = entry?.workPackage.targetEndDate ?? project?.targetEndDate ?? null;
+    if (deadline !== null && deadline < input.end.toUTC().toJSDate()) {
+      if (project?.deadlineType === "HARD") {
+        hardDeadlineExposureMinutes += item.unplannedMinutes;
+      } else if (project?.deadlineType !== "NONE") {
+        softDeadlineExposureMinutes += item.unplannedMinutes;
+      }
+    }
   }
-
-  let deadlineExposureMinutes = 0;
   for (const assignment of result.assignments) {
     const entry = workPackageById.get(assignment.workPackageId);
     if (!entry) continue;
@@ -438,9 +544,14 @@ export function objectiveVector(
     const deadlineEnd = DateTime.fromJSDate(deadline, { zone: "utc" })
       .setZone(SCHEDULE_TIME_ZONE).endOf("day").toUTC().toJSDate();
     if (assignment.endAt > deadlineEnd) {
-      deadlineExposureMinutes += Math.round(
+      const exposedMinutes = Math.round(
         (assignment.endAt.getTime() - assignment.startAt.getTime()) / 60_000,
       );
+      if (entry.project.deadlineType === "HARD") {
+        hardDeadlineExposureMinutes += exposedMinutes;
+      } else {
+        softDeadlineExposureMinutes += exposedMinutes;
+      }
     }
   }
 
@@ -469,13 +580,109 @@ export function objectiveVector(
     ? 0
     : Math.round((Math.max(...utilization) - Math.min(...utilization)) * 10_000);
 
-  return [
-    ...unplannedByPriority,
-    deadlineExposureMinutes,
+  const common = {
+    criticalUnplannedMinutes: unplannedByPriority[0]!,
+    highUnplannedMinutes: unplannedByPriority[1]!,
+    normalUnplannedMinutes: unplannedByPriority[2]!,
+    lowUnplannedMinutes: unplannedByPriority[3]!,
+    hardDeadlineExposureMinutes,
+    softDeadlineExposureMinutes,
     overtimeMinutes,
-    plannedCostCents,
+    laborCostCents: plannedCostCents,
     imbalanceBasisPoints,
-  ];
+  };
+  if (!includeResilienceProxy) {
+    return {
+      ...common,
+      singlePointExposureMinutes: 0,
+      maxRecoveryShortfallMinutes: 0,
+      skillConcentrationBasisPoints: 0,
+    };
+  }
+
+  const horizonWeeks = Math.max(1, Math.ceil(input.end.diff(input.start, "weeks").weeks));
+  const occupiedByEmployee = new Map<number, number>();
+  for (const interval of input.occupiedIntervals) {
+    occupiedByEmployee.set(
+      interval.employeeId,
+      (occupiedByEmployee.get(interval.employeeId) ?? 0)
+        + Math.round((interval.endAt.getTime() - interval.startAt.getTime()) / 60_000),
+    );
+  }
+  const totalAssignedByEmployee = new Map<number, number>();
+  const demandBySkillEmployee = new Map<string, {
+    skillId: number;
+    minimumSkillLevel: number;
+    byEmployee: Map<number, number>;
+  }>();
+  let singlePointExposureMinutes = 0;
+  for (const assignment of result.assignments) {
+    const entry = workPackageById.get(assignment.workPackageId);
+    if (!entry) continue;
+    const minutes = Math.round(
+      (assignment.endAt.getTime() - assignment.startAt.getTime()) / 60_000,
+    );
+    totalAssignedByEmployee.set(
+      assignment.employeeId,
+      (totalAssignedByEmployee.get(assignment.employeeId) ?? 0) + minutes,
+    );
+    const qualified = input.employees.filter((employee) => employee.skills.some(
+      (skill) => skill.skillId === entry.workPackage.requiredSkillId
+        && skill.level >= entry.workPackage.minimumSkillLevel,
+    ));
+    if (qualified.length <= 1) singlePointExposureMinutes += minutes;
+    const skillKey = `${entry.workPackage.requiredSkillId}:${entry.workPackage.minimumSkillLevel}`;
+    const skillDemand = demandBySkillEmployee.get(skillKey) ?? {
+      skillId: entry.workPackage.requiredSkillId,
+      minimumSkillLevel: entry.workPackage.minimumSkillLevel,
+      byEmployee: new Map<number, number>(),
+    };
+    const { byEmployee } = skillDemand;
+    byEmployee.set(
+      assignment.employeeId,
+      (byEmployee.get(assignment.employeeId) ?? 0) + minutes,
+    );
+    demandBySkillEmployee.set(skillKey, skillDemand);
+  }
+
+  let maxRecoveryShortfallMinutes = 0;
+  let weightedConcentration = 0;
+  let totalSkillDemand = 0;
+  for (const { skillId, minimumSkillLevel, byEmployee } of demandBySkillEmployee.values()) {
+    const skillDemand = [...byEmployee.values()].reduce((total, minutes) => total + minutes, 0);
+    totalSkillDemand += skillDemand;
+    const concentration = [...byEmployee.values()].reduce((total, minutes) => {
+      const share = minutes / Math.max(1, skillDemand);
+      return total + share * share;
+    }, 0);
+    weightedConcentration += concentration * skillDemand;
+    for (const [removedEmployeeId, removedMinutes] of byEmployee) {
+      const backupCapacity = input.employees.filter((employee) =>
+        employee.id !== removedEmployeeId
+        && employee.skills.some((skill) => skill.skillId === skillId
+          && skill.level >= minimumSkillLevel),
+      ).reduce((total, employee) => {
+        const horizonCapacity = employee.maxWeeklyMinutes * horizonWeeks;
+        const alreadyUsed = (occupiedByEmployee.get(employee.id) ?? 0)
+          + (totalAssignedByEmployee.get(employee.id) ?? 0);
+        return total + Math.max(0, horizonCapacity - alreadyUsed);
+      }, 0);
+      maxRecoveryShortfallMinutes = Math.max(
+        maxRecoveryShortfallMinutes,
+        Math.max(0, removedMinutes - backupCapacity),
+      );
+    }
+  }
+  const skillConcentrationBasisPoints = totalSkillDemand === 0
+    ? 0
+    : Math.round((weightedConcentration / totalSkillDemand) * 10_000);
+
+  return {
+    ...common,
+    singlePointExposureMinutes,
+    maxRecoveryShortfallMinutes,
+    skillConcentrationBasisPoints,
+  };
 }
 
 export function compareVectors(first: number[], second: number[]) {
@@ -585,27 +792,20 @@ export function allocatePortfolioWorkV1(input: PortfolioOptimizerInput) {
 
   const baselineMetrics = resultMetrics(greedyBaseline);
   const optimizedMetrics = resultMetrics(best);
+  const components = objectiveComponents(best, input);
   return {
     ...best,
     optimizerDiagnostics: {
       algorithmVersion: "portfolio-beam-v1",
       strategy: "BOUNDED_BEAM_SEARCH",
+      planningProfile: input.planningProfile ?? "BALANCED",
       beamWidth: BEAM_WIDTH,
       exploredStates: orderSearch.exploredStates,
       prunedStates: orderSearch.prunedStates,
       evaluatedPlans: uniqueOrders.size,
       searchLimitReached: orderSearch.searchLimitReached,
       runtimeMs: Date.now() - startedAt,
-      objectiveVector: {
-        criticalUnplannedMinutes: bestVector[0],
-        highUnplannedMinutes: bestVector[1],
-        normalUnplannedMinutes: bestVector[2],
-        lowUnplannedMinutes: bestVector[3],
-        deadlineExposureMinutes: bestVector[4],
-        overtimeMinutes: bestVector[5],
-        laborCostCents: bestVector[6],
-        imbalanceBasisPoints: bestVector[7],
-      },
+      objectiveVector: components,
       greedyBaseline: baselineMetrics,
       optimized: optimizedMetrics,
       improvement: {
