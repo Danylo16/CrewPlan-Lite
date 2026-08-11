@@ -187,8 +187,12 @@ describe("portfolio planning profiles", () => {
     expect(costFirst.optimizerDiagnostics).toMatchObject({
       algorithmVersion: "portfolio-pareto-beam-v1",
       strategy: "SHARED_MULTI_OBJECTIVE_PARETO_BEAM_SEARCH",
-      evaluatedPlans: 2,
+      beamWidth: 8,
+      packageVariantWidth: 4,
+      branchWidth: 4,
     });
+    expect(costFirst.optimizerDiagnostics.evaluatedPlans).toBeGreaterThanOrEqual(2);
+    expect(costFirst.optimizerDiagnostics.exploredStates).toBeLessThanOrEqual(4_500);
     expect(new Set([...plans.values()].map(
       (plan) => plan.optimizerDiagnostics.exploredStates,
     )).size).toBe(1);

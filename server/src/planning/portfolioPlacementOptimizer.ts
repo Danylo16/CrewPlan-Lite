@@ -35,11 +35,15 @@ const PLACEMENT_BRANCH_WIDTH = 3;
 const PLACEMENT_ORDER_LIMIT = 2;
 const MAX_PLACEMENT_STATES = 50_000;
 const PLACEMENT_LOOKAHEAD_DAYS = 3;
-const PARETO_BEAM_WIDTH = 12;
-const PARETO_PACKAGE_VARIANT_WIDTH = 8;
-const PARETO_BRANCH_WIDTH = 8;
-const PARETO_ORDER_LIMIT = 2;
-const PARETO_MAX_PLACEMENT_STATES = 12_000;
+// The shared search keeps alternatives for every objective by round-robin rank,
+// so it does not need the Cartesian budget of four independent searches. Four
+// placement branches guarantee one leading candidate per planning profile;
+// the wider state beam retains a second Pareto alternative where it matters.
+const PARETO_BEAM_WIDTH = 8;
+const PARETO_PACKAGE_VARIANT_WIDTH = 4;
+const PARETO_BRANCH_WIDTH = 4;
+const PARETO_ORDER_LIMIT = 1;
+const PARETO_MAX_PLACEMENT_STATES = 2_500;
 
 function placementLimits(input: PortfolioOptimizerInput) {
   if ((input.comparisonProfiles?.length ?? 0) > 1) {
