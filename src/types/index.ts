@@ -246,6 +246,11 @@ export interface PortfolioOptimizerDiagnostics {
   beamWidth: number;
   packageVariantWidth: number;
   branchWidth: number;
+  orderExploredStates: number;
+  placementExploredStates: number;
+  orderPrunedStates: number;
+  placementPrunedStates: number;
+  placementStateLimit: number;
   exploredStates: number;
   prunedStates: number;
   dominancePrunedStates: number;
@@ -289,6 +294,11 @@ export interface PortfolioPlanningScenario {
   maxRecoveryShortfallMinutes: number;
   skillConcentrationBasisPoints: number;
   optimizerRuntimeMs: number;
+  orderExploredStates: number;
+  placementExploredStates: number;
+  orderPrunedStates: number;
+  placementPrunedStates: number;
+  placementStateLimit: number;
   exploredStates: number;
   prunedStates: number;
   dominancePrunedStates: number;

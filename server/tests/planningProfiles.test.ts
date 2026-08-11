@@ -185,11 +185,12 @@ describe("portfolio planning profiles", () => {
     expect(costFirst.optimizerDiagnostics.optimized.laborCostCents)
       .toBeLessThan(deadlineFirst.optimizerDiagnostics.optimized.laborCostCents);
     expect(costFirst.optimizerDiagnostics).toMatchObject({
-      algorithmVersion: "portfolio-pareto-beam-v1",
+      algorithmVersion: "portfolio-pareto-beam-v2",
       strategy: "SHARED_MULTI_OBJECTIVE_PARETO_BEAM_SEARCH",
       beamWidth: 8,
       packageVariantWidth: 4,
       branchWidth: 4,
+      placementStateLimit: 3_000,
     });
     expect(costFirst.optimizerDiagnostics.evaluatedPlans).toBeGreaterThanOrEqual(2);
     expect(costFirst.optimizerDiagnostics.exploredStates).toBeLessThanOrEqual(4_500);

@@ -44,7 +44,9 @@ const PARETO_BEAM_WIDTH = 8;
 const PARETO_PACKAGE_VARIANT_WIDTH = 4;
 const PARETO_BRANCH_WIDTH = 4;
 const PARETO_ORDER_LIMIT = 1;
-const PARETO_MAX_PLACEMENT_STATES = 2_500;
+// Memoized scoring keeps this wider budget inside the interactive target while
+// allowing sparse-availability alternatives to survive until the final beam.
+const PARETO_MAX_PLACEMENT_STATES = 3_000;
 
 function placementLimits(input: PortfolioOptimizerInput) {
   if ((input.comparisonProfiles?.length ?? 0) > 1) {
@@ -624,6 +626,18 @@ function schedulePackageVariants(
     if (latest) completed.packageFinish.set(workPackage.id, latest.endAt);
     return [completed];
   }
+  if (stats.exploredStates >= limits.maxStates) {
+    stats.searchLimitReached = true;
+    const exhausted = clonePlacementState(baseState);
+    exhausted.unplannedWorkPackages.push({
+      workPackageId: workPackage.id,
+      projectId: project.id,
+      name: workPackage.name,
+      unplannedMinutes: remaining,
+      reason: "Placement search limit reached",
+    });
+    return [exhausted];
+  }
 
   const earliest = packageEarliest(baseState, project, workPackage, input.start);
   let variants: PackageVariant[] = [{
@@ -632,6 +646,7 @@ function schedulePackageVariants(
     packageIntervals: [...existingPackageIntervals],
   }];
   const completed: PlacementState[] = [];
+  let truncatedVariants: PackageVariant[] = [];
 
   while (variants.length > 0) {
     const expanded: PackageVariant[] = [];
@@ -696,7 +711,10 @@ function schedulePackageVariants(
       }
       if (stats.searchLimitReached) break;
     }
-    if (stats.searchLimitReached) break;
+    if (stats.searchLimitReached) {
+      truncatedVariants = expanded.length > 0 ? expanded : variants;
+      break;
+    }
     variants = prunePackageVariants(
       expanded,
       input,
@@ -706,6 +724,31 @@ function schedulePackageVariants(
     );
   }
   if (completed.length > 0) return completed;
+  if (truncatedVariants.length > 0) {
+    return prunePackageVariants(
+      truncatedVariants,
+      input,
+      limits.packageVariantWidth,
+      stats,
+      scoreCache,
+    ).map((variant) => {
+      const truncated = clonePlacementState(variant.state);
+      if (variant.remaining === 0) {
+        const latest = [...variant.packageIntervals]
+          .sort((first, second) => second.endAt.getTime() - first.endAt.getTime())[0];
+        if (latest) truncated.packageFinish.set(workPackage.id, latest.endAt);
+      } else {
+        truncated.unplannedWorkPackages.push({
+          workPackageId: workPackage.id,
+          projectId: project.id,
+          name: workPackage.name,
+          unplannedMinutes: variant.remaining,
+          reason: "Placement search limit reached",
+        });
+      }
+      return truncated;
+    });
+  }
   const fallback = clonePlacementState(baseState);
   fallback.unplannedWorkPackages.push({
     workPackageId: workPackage.id,
@@ -731,7 +774,6 @@ function placementSearchForOrder(
     const expanded = beam.flatMap((state) =>
       schedulePackageVariants(input, state, entry, stats, scoreCache),
     );
-    if (stats.searchLimitReached) return [];
     beam = prunePlacementStates(expanded, input, limits.beamWidth, stats, scoreCache);
   }
   return beam.map((state) => ({
@@ -784,6 +826,11 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
       beamWidth: limits.beamWidth,
       packageVariantWidth: limits.packageVariantWidth,
       branchWidth: limits.branchWidth,
+      orderExploredStates: orderSearch.exploredStates,
+      placementExploredStates: stats.exploredStates,
+      orderPrunedStates: orderSearch.prunedStates,
+      placementPrunedStates: stats.prunedStates,
+      placementStateLimit: limits.maxStates,
       exploredStates: orderSearch.exploredStates + stats.exploredStates,
       prunedStates: orderSearch.prunedStates + stats.prunedStates,
       dominancePrunedStates: stats.dominancePrunedStates,
@@ -885,13 +932,18 @@ export function allocatePortfolioScenarioPlans(
     results.set(profile, {
       ...best,
       optimizerDiagnostics: {
-        algorithmVersion: "portfolio-pareto-beam-v1",
+        algorithmVersion: "portfolio-pareto-beam-v2",
         strategy: "SHARED_MULTI_OBJECTIVE_PARETO_BEAM_SEARCH",
         planningProfile: profile,
         searchMode: "COMPARISON",
         beamWidth: limits.beamWidth,
         packageVariantWidth: limits.packageVariantWidth,
         branchWidth: limits.branchWidth,
+        orderExploredStates: orderSearch.exploredStates,
+        placementExploredStates: stats.exploredStates,
+        orderPrunedStates: orderSearch.prunedStates,
+        placementPrunedStates: stats.prunedStates,
+        placementStateLimit: limits.maxStates,
         exploredStates: orderSearch.exploredStates + stats.exploredStates,
         prunedStates: orderSearch.prunedStates + stats.prunedStates,
         dominancePrunedStates: stats.dominancePrunedStates,
