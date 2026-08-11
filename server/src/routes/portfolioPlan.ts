@@ -35,9 +35,6 @@ function planningError(error: unknown, response: Parameters<Parameters<typeof po
   if (code === "PLANNING_INPUT_TOO_LARGE") {
     return response.status(422).json({ code, message: "Portfolio exceeds the planner limits" });
   }
-  if (code === "RESILIENCE_INPUT_TOO_LARGE") {
-    return response.status(422).json({ code, message: "Resilience testing supports at most 12 scheduled employees" });
-  }
   throw error;
 }
 

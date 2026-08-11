@@ -1,7 +1,8 @@
-import { buildPortfolioPlanPreview } from "./portfolioPlan.js";
+import {
+  buildPortfolioPlanPreview,
+  createPlanningSnapshotDatabase,
+} from "./portfolioPlan.js";
 import type { PlanningDatabase, PortfolioPlanOptions } from "./portfolioPlan.js";
-
-const MAX_RESILIENCE_SCENARIOS = 12;
 
 export interface PortfolioResilienceOptions extends Omit<PortfolioPlanOptions, "excludedEmployeeIds"> {
   previewId: string;
@@ -17,6 +18,7 @@ export async function buildPortfolioResilienceReport(
   options: PortfolioResilienceOptions,
 ) {
   const startedAt = Date.now();
+  const snapshotDatabase = createPlanningSnapshotDatabase(database);
   const planOptions: PortfolioPlanOptions = {
     horizonStart: options.horizonStart,
     horizonWeeks: options.horizonWeeks,
@@ -25,14 +27,10 @@ export async function buildPortfolioResilienceReport(
       ? { planningProfile: options.planningProfile }
       : {}),
   };
-  const baseline = await buildPortfolioPlanPreview(database, planOptions);
+  const baseline = await buildPortfolioPlanPreview(snapshotDatabase, planOptions);
   if (baseline.previewId !== options.previewId || baseline.inputVersion !== options.inputVersion) {
     throw new Error("PORTFOLIO_PREVIEW_STALE");
   }
-  if (baseline.resilienceCandidates.length > MAX_RESILIENCE_SCENARIOS) {
-    throw new Error("RESILIENCE_INPUT_TOO_LARGE");
-  }
-
   const baselineMinutes = baseline.metrics.allocatedMinutes;
   const baselineCriticalRisks = baseline.metrics.unfilledCriticalFixedCoveragePositions
     + baseline.metrics.criticalUnplannedWorkPackages;
@@ -40,7 +38,7 @@ export async function buildPortfolioResilienceReport(
 
   for (const candidate of baseline.resilienceCandidates) {
     const scenarioStartedAt = Date.now();
-    const scenario = await buildPortfolioPlanPreview(database, {
+    const scenario = await buildPortfolioPlanPreview(snapshotDatabase, {
       ...planOptions,
       excludedEmployeeIds: [candidate.employeeId],
     });
@@ -98,7 +96,7 @@ export async function buildPortfolioResilienceReport(
     horizonStart: baseline.horizonStart,
     horizonEndExclusive: baseline.horizonEndExclusive,
     horizonWeeks: baseline.horizonWeeks,
-    algorithmVersion: "portfolio-resilience-n-minus-one-v1",
+    algorithmVersion: "portfolio-resilience-n-minus-one-v2",
     strategy: "DETERMINISTIC_EMPLOYEE_REMOVAL_AND_REOPTIMIZATION",
     scorePercent: averageCoveragePercent,
     averageCoveragePercent,

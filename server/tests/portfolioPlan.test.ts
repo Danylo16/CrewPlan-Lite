@@ -197,6 +197,60 @@ describe("multi-week portfolio planner", () => {
     });
   });
 
+  it("tests every scheduled employee beyond the former 12-scenario cap", async () => {
+    const employees = Array.from({ length: 13 }, (_, index) => employee({
+      id: index + 1,
+      name: `Employee ${index + 1}`,
+      email: `employee-${index + 1}@example.com`,
+      preferredWeeklyMinutes: 240,
+      maxWeeklyMinutes: 240,
+      availability: mondayToFriday.map((availability) => ({
+        ...availability,
+        id: availability.id + index * mondayToFriday.length,
+        employeeId: index + 1,
+      })),
+      skills: [{ employeeId: index + 1, skillId: 1, level: 5 }],
+    }));
+    const shifts = employees.map((item, index) => ({
+      id: 1_000 + index,
+      employeeId: item.id,
+      projectId: 1,
+      workPackageId: null,
+      projectRequirementId: null,
+      planningRunId: null,
+      startAt: new Date("2026-08-10T07:00:00.000Z"),
+      endAt: new Date("2026-08-10T11:00:00.000Z"),
+      note: null,
+      kind: "GENERAL",
+      origin: "MANUAL",
+      status: "COMMITTED",
+      plannedCostCents: null,
+      cancelledAt: null,
+      createdAt: new Date("2026-08-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-08-01T00:00:00.000Z"),
+    }));
+    const planningDatabase = database([project([])], shifts, employees);
+    const options = {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 1,
+      replaceGenerated: true,
+    };
+    const preview = await buildPortfolioPlanPreview(planningDatabase, options);
+    const report = await buildPortfolioResilienceReport(planningDatabase, {
+      ...options,
+      previewId: preview.previewId,
+      inputVersion: preview.inputVersion,
+    });
+
+    expect(report.algorithmVersion).toBe("portfolio-resilience-n-minus-one-v2");
+    expect(report.testedAbsences).toBe(13);
+    expect(report.scenarios).toHaveLength(13);
+    expect(planningDatabase.employee.findMany).toHaveBeenCalledTimes(4);
+    expect(planningDatabase.project.findMany).toHaveBeenCalledTimes(2);
+    expect(planningDatabase.projectRequirement.findMany).toHaveBeenCalledTimes(2);
+    expect(planningDatabase.shift.findMany).toHaveBeenCalledTimes(5);
+  });
+
   it("allocates remaining scope without changing actual progress", async () => {
     const preview = await buildPortfolioPlanPreview(database([project()]), {
       horizonStart: "2026-08-10",

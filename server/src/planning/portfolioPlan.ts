@@ -57,9 +57,45 @@ function memoizedDelegate(delegate: ReadDelegate) {
   };
 }
 
-function snapshotDatabase(database: PlanningDatabase): PlanningDatabase {
+function memoizedEmployeeDelegate(delegate: ReadDelegate) {
+  const memoized = memoizedDelegate(delegate);
   return {
-    employee: memoizedDelegate(database.employee as unknown as ReadDelegate),
+    async findMany(args: unknown) {
+      if (!args || typeof args !== "object") return memoized.findMany(args);
+      const request = args as {
+        where?: { id?: { notIn?: unknown } } & Record<string, unknown>;
+      } & Record<string, unknown>;
+      const idFilter = request.where?.id;
+      const excludedIds = idFilter?.notIn;
+      if (
+        !Array.isArray(excludedIds)
+        || excludedIds.some((id) => typeof id !== "number")
+        || Object.keys(idFilter ?? {}).some((key) => key !== "notIn")
+      ) {
+        return memoized.findMany(args);
+      }
+
+      const where = { ...request.where };
+      delete where.id;
+      const employees = await memoized.findMany({ ...request, where });
+      if (!Array.isArray(employees)) return employees;
+      const excluded = new Set<number>(excludedIds);
+      return employees.filter((employee) =>
+        employee
+        && typeof employee === "object"
+        && "id" in employee
+        && typeof employee.id === "number"
+        && !excluded.has(employee.id),
+      );
+    },
+  };
+}
+
+export function createPlanningSnapshotDatabase(
+  database: PlanningDatabase,
+): PlanningDatabase {
+  return {
+    employee: memoizedEmployeeDelegate(database.employee as unknown as ReadDelegate),
     project: memoizedDelegate(database.project as unknown as ReadDelegate),
     projectRequirement: memoizedDelegate(
       database.projectRequirement as unknown as ReadDelegate,
@@ -525,7 +561,7 @@ export async function buildPortfolioScenarioComparison(
   options: Omit<PortfolioPlanOptions, "planningProfile" | "excludedEmployeeIds">,
 ) {
   const startedAt = Date.now();
-  const cachedDatabase = snapshotDatabase(database);
+  const cachedDatabase = createPlanningSnapshotDatabase(database);
   const scenarios = [];
   let sharedPlans: ReturnType<typeof allocatePortfolioScenarioPlans> | null = null;
   const sharedRunner: typeof allocatePortfolioWork = (input) => {
