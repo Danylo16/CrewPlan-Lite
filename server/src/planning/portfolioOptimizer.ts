@@ -6,6 +6,8 @@ const MAX_ASSIGNMENTS = 4_000;
 const MAX_BLOCK_MINUTES = 480;
 const BEAM_WIDTH = 32;
 const MAX_EXPLORED_STATES = 50_000;
+const COMPARISON_BEAM_WIDTH = 8;
+const COMPARISON_MAX_EXPLORED_STATES = 2_000;
 
 export interface Interval {
   startAt: Date;
@@ -73,6 +75,8 @@ export type PlanningProfile =
   | "DEADLINE_FIRST"
   | "RESILIENCE_FIRST";
 
+export type OptimizerSearchMode = "FULL" | "COMPARISON";
+
 export interface PortfolioOptimizerInput {
   start: DateTime;
   end: DateTime;
@@ -82,6 +86,7 @@ export interface PortfolioOptimizerInput {
   futurePlannedByPackage: Map<number, number>;
   futurePlannedIntervalsByPackage: Map<number, Interval[]>;
   planningProfile?: PlanningProfile;
+  searchMode?: OptimizerSearchMode;
 }
 
 export interface UnplannedWorkPackage {
@@ -717,6 +722,12 @@ export function resultMetrics(result: ReturnType<typeof allocatePortfolioWorkGre
 }
 
 export function searchPackageOrders(input: PortfolioOptimizerInput) {
+  const beamWidth = input.searchMode === "COMPARISON"
+    ? COMPARISON_BEAM_WIDTH
+    : BEAM_WIDTH;
+  const maxExploredStates = input.searchMode === "COMPARISON"
+    ? COMPARISON_MAX_EXPLORED_STATES
+    : MAX_EXPLORED_STATES;
   const defaultOrder = orderedWorkPackages(input.projects);
   let beam: OrderState[] = [{
     ordered: [],
@@ -732,7 +743,7 @@ export function searchPackageOrders(input: PortfolioOptimizerInput) {
     const expanded: OrderState[] = [];
     for (const state of beam) {
       for (const next of readyEntries(state)) {
-        if (exploredStates >= MAX_EXPLORED_STATES) {
+        if (exploredStates >= maxExploredStates) {
           searchLimitReached = true;
           break;
         }
@@ -751,8 +762,8 @@ export function searchPackageOrders(input: PortfolioOptimizerInput) {
     }
     if (searchLimitReached) break;
     expanded.sort((first, second) => compareOrderStates(first, second, input.employees));
-    prunedStates += Math.max(0, expanded.length - BEAM_WIDTH);
-    beam = expanded.slice(0, BEAM_WIDTH);
+    prunedStates += Math.max(0, expanded.length - beamWidth);
+    beam = expanded.slice(0, beamWidth);
   }
 
   const uniqueOrders = new Map<string, PackageEntry[]>();
@@ -765,12 +776,15 @@ export function searchPackageOrders(input: PortfolioOptimizerInput) {
     exploredStates,
     prunedStates,
     searchLimitReached,
+    beamWidth,
   };
 }
 
-export function allocatePortfolioWorkV1(input: PortfolioOptimizerInput) {
+export function allocatePortfolioWorkV1(
+  input: PortfolioOptimizerInput,
+  orderSearch = searchPackageOrders(input),
+) {
   const startedAt = Date.now();
-  const orderSearch = searchPackageOrders(input);
   const { defaultOrder, uniqueOrders } = orderSearch;
   const greedyBaseline = allocatePortfolioWorkGreedy(input, defaultOrder);
   let best = greedyBaseline;
@@ -799,7 +813,8 @@ export function allocatePortfolioWorkV1(input: PortfolioOptimizerInput) {
       algorithmVersion: "portfolio-beam-v1",
       strategy: "BOUNDED_BEAM_SEARCH",
       planningProfile: input.planningProfile ?? "BALANCED",
-      beamWidth: BEAM_WIDTH,
+      searchMode: input.searchMode ?? "FULL",
+      beamWidth: orderSearch.beamWidth,
       exploredStates: orderSearch.exploredStates,
       prunedStates: orderSearch.prunedStates,
       evaluatedPlans: uniqueOrders.size,

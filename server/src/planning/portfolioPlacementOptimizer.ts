@@ -35,6 +35,24 @@ const PLACEMENT_ORDER_LIMIT = 2;
 const MAX_PLACEMENT_STATES = 50_000;
 const PLACEMENT_LOOKAHEAD_DAYS = 3;
 
+function placementLimits(input: PortfolioOptimizerInput) {
+  return input.searchMode === "COMPARISON"
+    ? {
+      beamWidth: 3,
+      packageVariantWidth: 2,
+      branchWidth: 2,
+      orderLimit: 1,
+      maxStates: 2_000,
+    }
+    : {
+      beamWidth: PLACEMENT_BEAM_WIDTH,
+      packageVariantWidth: PACKAGE_VARIANT_WIDTH,
+      branchWidth: PLACEMENT_BRANCH_WIDTH,
+      orderLimit: PLACEMENT_ORDER_LIMIT,
+      maxStates: MAX_PLACEMENT_STATES,
+    };
+}
+
 interface PlacementState {
   assignments: PlanAssignment[];
   unplannedWorkPackages: UnplannedWorkPackage[];
@@ -332,6 +350,7 @@ function schedulePackageVariants(
   entry: PackageEntry,
   stats: PlacementSearchStats,
 ) {
+  const limits = placementLimits(input);
   const { project, workPackage } = entry;
   const remaining = Math.max(
     0,
@@ -402,8 +421,8 @@ function schedulePackageVariants(
         completed.push(variant.state);
         continue;
       }
-      for (const candidate of candidates.slice(0, PLACEMENT_BRANCH_WIDTH)) {
-        if (stats.exploredStates >= MAX_PLACEMENT_STATES) {
+      for (const candidate of candidates.slice(0, limits.branchWidth)) {
+        if (stats.exploredStates >= limits.maxStates) {
           stats.searchLimitReached = true;
           break;
         }
@@ -441,8 +460,8 @@ function schedulePackageVariants(
         placementSignature(second.state),
       ),
     );
-    stats.prunedStates += Math.max(0, expanded.length - PACKAGE_VARIANT_WIDTH);
-    variants = expanded.slice(0, PACKAGE_VARIANT_WIDTH);
+    stats.prunedStates += Math.max(0, expanded.length - limits.packageVariantWidth);
+    variants = expanded.slice(0, limits.packageVariantWidth);
   }
   if (completed.length > 0) return completed;
   const fallback = clonePlacementState(baseState);
@@ -463,13 +482,14 @@ function placementSearchForOrder(
   order: PackageEntry[],
   stats: PlacementSearchStats,
 ) {
+  const limits = placementLimits(input);
   let beam = [initialPlacementState(input)];
   for (const entry of order) {
     const expanded = beam.flatMap((state) =>
       schedulePackageVariants(input, state, entry, stats),
     );
     if (stats.searchLimitReached) return [];
-    beam = prunePlacementStates(expanded, input, PLACEMENT_BEAM_WIDTH, stats);
+    beam = prunePlacementStates(expanded, input, limits.beamWidth, stats);
   }
   return beam.map((state) => ({
     assignments: state.assignments,
@@ -479,8 +499,8 @@ function placementSearchForOrder(
 
 export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
   const startedAt = Date.now();
-  const v1 = allocatePortfolioWorkV1(input);
   const orderSearch = searchPackageOrders(input);
+  const v1 = allocatePortfolioWorkV1(input, orderSearch);
   const stats: PlacementSearchStats = {
     exploredStates: 0,
     prunedStates: 0,
@@ -493,7 +513,8 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
   };
   let bestVector = objectiveVector(best, input);
   let evaluatedPlans = 1;
-  const orders = [...orderSearch.uniqueOrders.values()].slice(0, PLACEMENT_ORDER_LIMIT);
+  const limits = placementLimits(input);
+  const orders = [...orderSearch.uniqueOrders.values()].slice(0, limits.orderLimit);
   for (const order of orders) {
     for (const candidate of placementSearchForOrder(input, order, stats)) {
       evaluatedPlans += 1;
@@ -516,9 +537,10 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
       algorithmVersion: "portfolio-beam-v2",
       strategy: "PLACEMENT_AWARE_BOUNDED_BEAM_SEARCH",
       planningProfile: input.planningProfile ?? "BALANCED",
-      beamWidth: PLACEMENT_BEAM_WIDTH,
-      packageVariantWidth: PACKAGE_VARIANT_WIDTH,
-      branchWidth: PLACEMENT_BRANCH_WIDTH,
+      searchMode: input.searchMode ?? "FULL",
+      beamWidth: limits.beamWidth,
+      packageVariantWidth: limits.packageVariantWidth,
+      branchWidth: limits.branchWidth,
       exploredStates: orderSearch.exploredStates + stats.exploredStates,
       prunedStates: orderSearch.prunedStates + stats.prunedStates,
       dominancePrunedStates: stats.dominancePrunedStates,

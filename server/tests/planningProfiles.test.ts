@@ -136,4 +136,31 @@ describe("portfolio planning profiles", () => {
       singlePointExposureMinutes: 480,
     });
   });
+
+  it("uses a smaller deterministic search budget for scenario shortlists", () => {
+    const baseInput = input(
+      "BALANCED",
+      [employee(1, "Anna", 5_000), employee(2, "Backup", 5_500)],
+      project(960, null),
+    );
+    const full = allocatePortfolioWork(baseInput);
+    const comparison = allocatePortfolioWork({
+      ...baseInput,
+      searchMode: "COMPARISON",
+    });
+
+    expect(full.optimizerDiagnostics).toMatchObject({
+      searchMode: "FULL",
+      beamWidth: 6,
+      packageVariantWidth: 3,
+      branchWidth: 3,
+    });
+    expect(comparison.optimizerDiagnostics).toMatchObject({
+      searchMode: "COMPARISON",
+      beamWidth: 3,
+      packageVariantWidth: 2,
+      branchWidth: 2,
+    });
+    expect(comparison.optimizerDiagnostics.optimized.plannedMinutes).toBe(960);
+  });
 });

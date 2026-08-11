@@ -5,7 +5,11 @@ import { buildSchedulePreview } from "../scheduling/schedulePreview.js";
 import { allocationCostBreakdown } from "../scheduling/scoring.js";
 import { SCHEDULE_TIME_ZONE } from "../scheduling/timeAdapter.js";
 import { allocatePortfolioWork } from "./portfolioPlacementOptimizer.js";
-import type { Interval, PlanningProfile } from "./portfolioOptimizer.js";
+import type {
+  Interval,
+  OptimizerSearchMode,
+  PlanningProfile,
+} from "./portfolioOptimizer.js";
 
 const MAX_HORIZON_WEEKS = 12;
 const MAX_WORK_PACKAGES = 150;
@@ -21,6 +25,7 @@ export interface PortfolioPlanOptions {
   replaceGenerated: boolean;
   excludedEmployeeIds?: number[];
   planningProfile?: PlanningProfile;
+  optimizerSearchMode?: OptimizerSearchMode;
 }
 
 const PLANNING_PROFILES: PlanningProfile[] = [
@@ -218,6 +223,7 @@ export async function buildPortfolioPlanPreview(
     futurePlannedByPackage,
     futurePlannedIntervalsByPackage,
     planningProfile: options.planningProfile ?? "BALANCED",
+    searchMode: options.optimizerSearchMode ?? "FULL",
   });
   const retainedAllocations: CostedInterval[] = availablePreservedHorizonShifts.map((shift) => ({
     employeeId: shift.employeeId,
@@ -519,6 +525,7 @@ export async function buildPortfolioScenarioComparison(
     const preview = await buildPortfolioPlanPreview(cachedDatabase, {
       ...options,
       planningProfile,
+      optimizerSearchMode: "COMPARISON",
     });
     const objective = preview.optimizerDiagnostics.objectiveVector;
     scenarios.push({
@@ -554,6 +561,7 @@ export async function buildPortfolioScenarioComparison(
     horizonStart: options.horizonStart,
     horizonWeeks: options.horizonWeeks,
     replaceGenerated: options.replaceGenerated,
+    comparisonMode: "BOUNDED_SHORTLIST" as const,
     runtimeMs: Date.now() - startedAt,
     scenarios,
   };
