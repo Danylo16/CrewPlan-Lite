@@ -1043,6 +1043,9 @@ textarea {
 .scenario-card dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding-bottom: 7px; border-bottom: 1px solid #e6eaf0; }
 .scenario-card dt { color: #697386; font-size: 11px; }
 .scenario-card dd { margin: 0; color: #101d36; font-size: 12px; font-weight: 750; text-align: right; }
+.scenario-deltas { display: grid; gap: 4px; padding: 10px; border-radius: 8px; background: #eef1ff; color: #3c4db3; font-size: 10px; }
+.scenario-deltas strong, .scenario-deltas span { display: block; }
+.scenario-deltas strong { margin-bottom: 2px; color: #25358f; }
 .scenario-card button { width: 100%; margin-top: auto; }
 .scenario-note { display: flex; justify-content: space-between; gap: 20px; margin-top: 14px; padding: 12px 14px; border-radius: 9px; color: #5d4a12; background: #fff8df; font-size: 12px; }
 .scenario-note strong, .scenario-note span { display: block; }

@@ -68,6 +68,19 @@ function costOutcome(greedyCents: number, optimizedCents: number) {
     : `${money(difference)} additional`;
 }
 
+function signedCostDelta(cents: number) {
+  if (cents === 0) return "same cost";
+  return cents < 0 ? `${money(Math.abs(cents))} less` : `${money(cents)} more`;
+}
+
+function signedPercentDelta(basisPoints: number) {
+  if (basisPoints === 0) return "same concentration";
+  const points = Math.abs(basisPoints) / 100;
+  return basisPoints < 0
+    ? `${points.toFixed(0)}pp less concentrated`
+    : `${points.toFixed(0)}pp more concentrated`;
+}
+
 function weekOf(value: string) {
   const date = new Date(value);
   const local = new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -130,6 +143,9 @@ export function PlannerPage() {
       || optimized.overtimeMinutes < greedyBaseline.overtimeMinutes
       || optimized.laborCostCents < greedyBaseline.laborCostCents;
   }, [preview]);
+  const balancedScenario = comparison?.scenarios.find(
+    (scenario) => scenario.planningProfile === "BALANCED",
+  );
 
   async function generate(profile = planningProfile) {
     setIsGenerating(true);
@@ -245,9 +261,22 @@ export function PlannerPage() {
       <div className="scenario-grid">{comparison.scenarios.map((scenario) => {
         const content = PROFILE_CONTENT[scenario.planningProfile];
         const deadlineExposure = scenario.hardDeadlineExposureMinutes + scenario.softDeadlineExposureMinutes;
+        const balancedDeadlineExposure = balancedScenario
+          ? balancedScenario.hardDeadlineExposureMinutes
+            + balancedScenario.softDeadlineExposureMinutes
+          : 0;
+        const costDelta = balancedScenario
+          ? scenario.workPackageCostCents - balancedScenario.workPackageCostCents
+          : 0;
+        const deadlineDelta = deadlineExposure - balancedDeadlineExposure;
+        const concentrationDelta = balancedScenario
+          ? scenario.skillConcentrationBasisPoints
+            - balancedScenario.skillConcentrationBasisPoints
+          : 0;
         return <article className={`scenario-card ${planningProfile === scenario.planningProfile ? "scenario-selected" : ""}`} key={scenario.planningProfile}>
           <div><span>{scenario.planningProfile.replaceAll("_", " ")}</span><h4>{content.label}</h4><p>{content.description}</p></div>
           <dl><div><dt>Planned / unplanned</dt><dd>{hours(scenario.proposedWorkMinutes)} / {hours(scenario.unplannedMinutes)}</dd></div><div><dt>Work Package cost</dt><dd>{money(scenario.workPackageCostCents)}</dd></div><div><dt>Deadline exposure</dt><dd>{hours(deadlineExposure)}</dd></div><div><dt>Single-point exposure</dt><dd>{hours(scenario.singlePointExposureMinutes)}</dd></div><div><dt>Skill concentration</dt><dd>{(scenario.skillConcentrationBasisPoints / 100).toFixed(0)}%</dd></div></dl>
+          <div className="scenario-deltas"><strong>{scenario.planningProfile === "BALANCED" ? "Comparison baseline" : "Difference from Balanced"}</strong>{scenario.planningProfile !== "BALANCED" && <><span>{signedCostDelta(costDelta)}</span><span>{deadlineDelta === 0 ? "same deadline exposure" : `${hours(Math.abs(deadlineDelta))} ${deadlineDelta < 0 ? "less" : "more"} deadline exposure`}</span><span>{signedPercentDelta(concentrationDelta)}</span></>}</div>
           <button className={planningProfile === scenario.planningProfile ? "primary-button" : "secondary-button"} disabled={isGenerating} type="button" onClick={() => void reviewScenario(scenario.planningProfile)}>{isGenerating && planningProfile === scenario.planningProfile ? "Building preview…" : "Review this plan"}</button>
         </article>;
       })}</div>

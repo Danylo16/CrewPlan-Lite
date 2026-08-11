@@ -144,7 +144,12 @@ function placementCandidates(
   remaining: number,
   packageIntervals: Interval[],
 ) {
+  const portfolioScale = input.employees.length * input.projects.reduce(
+    (total, candidateProject) => total + candidateProject.workPackages.length,
+    0,
+  );
   const lookaheadDays = (input.planningProfile ?? "BALANCED") === "COST_FIRST"
+    && portfolioScale <= 40
     ? PLACEMENT_LOOKAHEAD_DAYS
     : 1;
   const collected = [] as Array<{
