@@ -120,6 +120,8 @@ describe("multi-week portfolio planner", () => {
     expect(new Set(comparison.scenarios.map(
       (scenario) => scenario.optimizerRuntimeMs,
     )).size).toBe(1);
+    expect(comparison.scenarios.every((scenario) => scenario.exploredStates > 0)).toBe(true);
+    expect(comparison.scenarios.every((scenario) => scenario.candidateCount >= 1)).toBe(true);
     expect(planningDatabase.employee.findMany).toHaveBeenCalledTimes(2);
     expect(planningDatabase.project.findMany).toHaveBeenCalledTimes(1);
     expect(planningDatabase.projectRequirement.findMany).toHaveBeenCalledTimes(1);

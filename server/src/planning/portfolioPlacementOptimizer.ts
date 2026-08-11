@@ -7,6 +7,7 @@ import {
   freeSegments,
   localDateAtMinute,
   objectiveVector,
+  objectiveVectorFromComponents,
   objectiveComponents,
   overlaps,
   resultMetrics,
@@ -356,15 +357,67 @@ function placementSignature(state: Pick<PlacementState, "assignments">) {
     .join("|");
 }
 
+function planSignature(
+  result: Pick<PlacementState, "assignments" | "unplannedWorkPackages">,
+) {
+  const unplanned = result.unplannedWorkPackages.map((item) => [
+    item.projectId,
+    item.workPackageId,
+    item.unplannedMinutes,
+    item.reason,
+  ].join(":"))
+    .sort()
+    .join("|");
+  return `${placementSignature(result)}#${unplanned}`;
+}
+
 function compareSignatures(first: string, second: string) {
   return first < second ? -1 : first > second ? 1 : 0;
 }
 
-function commonParetoVector(
-  result: { assignments: PlanAssignment[]; unplannedWorkPackages: UnplannedWorkPackage[] },
-  input: PortfolioOptimizerInput,
-) {
-  const components = objectiveComponents(result, input);
+type ComparablePlan = {
+  assignments: PlanAssignment[];
+  unplannedWorkPackages: UnplannedWorkPackage[];
+};
+
+interface ComparisonScore {
+  signature: string;
+  components: ReturnType<typeof objectiveComponents>;
+  vectors: Map<PlanningProfile, number[]>;
+}
+
+interface ComparisonScoreCache {
+  score(result: ComparablePlan): ComparisonScore;
+}
+
+function comparisonScoreCache(input: PortfolioOptimizerInput): ComparisonScoreCache {
+  const scores = new Map<string, ComparisonScore>();
+  return {
+    score(result) {
+      const signature = planSignature(result);
+      const cached = scores.get(signature);
+      if (cached) return cached;
+      const components = objectiveComponents(result, input);
+      const score = {
+        signature,
+        components,
+        vectors: new Map<PlanningProfile, number[]>(),
+      };
+      scores.set(signature, score);
+      return score;
+    },
+  };
+}
+
+function profileVector(score: ComparisonScore, profile: PlanningProfile) {
+  const cached = score.vectors.get(profile);
+  if (cached) return cached;
+  const vector = objectiveVectorFromComponents(score.components, profile);
+  score.vectors.set(profile, vector);
+  return vector;
+}
+
+function commonParetoVector(components: ReturnType<typeof objectiveComponents>) {
   return [
     components.criticalUnplannedMinutes,
     components.highUnplannedMinutes,
@@ -399,20 +452,23 @@ function roundRobinByProfile<T>(
   signature: (item: T) => string,
 ) {
   if (items.length <= width) return items;
-  const rankings = profiles.map((profile) => [...items].sort((first, second) =>
-    compareVectors(vector(first, profile), vector(second, profile))
-      || compareSignatures(signature(first), signature(second)),
+  const scored = items.map((item) => ({
+    item,
+    signature: signature(item),
+    vectors: new Map(profiles.map((profile) => [profile, vector(item, profile)])),
+  }));
+  const rankings = profiles.map((profile) => [...scored].sort((first, second) =>
+    compareVectors(first.vectors.get(profile)!, second.vectors.get(profile)!)
+      || compareSignatures(first.signature, second.signature),
   ));
   const selected: T[] = [];
   const seen = new Set<string>();
-  for (let rank = 0; selected.length < width && rank < items.length; rank += 1) {
+  for (let rank = 0; selected.length < width && rank < scored.length; rank += 1) {
     for (const ranking of rankings) {
-      const item = ranking[rank];
-      if (!item) continue;
-      const key = signature(item);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      selected.push(item);
+      const scoredItem = ranking[rank];
+      if (!scoredItem || seen.has(scoredItem.signature)) continue;
+      seen.add(scoredItem.signature);
+      selected.push(scoredItem.item);
       if (selected.length === width) break;
     }
   }
@@ -424,52 +480,45 @@ function prunePlacementStates(
   input: PortfolioOptimizerInput,
   width: number,
   stats: PlacementSearchStats,
+  scoreCache?: ComparisonScoreCache,
 ) {
   const dominantBySignature = new Map<string, PlacementState>();
   for (const state of states) {
-    const signature = placementSignature(state);
-    const existing = dominantBySignature.get(signature);
-    if (!existing) {
+    const signature = planSignature(state);
+    if (dominantBySignature.has(signature)) {
+      stats.dominancePrunedStates += 1;
+    } else {
       dominantBySignature.set(signature, state);
-      continue;
     }
-    stats.dominancePrunedStates += 1;
-    if (
-      compareVectors(
-        objectiveVector({
-          assignments: state.assignments,
-          unplannedWorkPackages: state.unplannedWorkPackages,
-        }, input),
-        objectiveVector({
-          assignments: existing.assignments,
-          unplannedWorkPackages: existing.unplannedWorkPackages,
-        }, input),
-      ) < 0
-    ) dominantBySignature.set(signature, state);
   }
   const unique = [...dominantBySignature.values()];
   const profiles = searchProfiles(input);
   if (profiles.length > 1) {
-    const vectors = new Map(unique.map((state) => [
-      state,
-      commonParetoVector({
+    const activeScoreCache = scoreCache ?? comparisonScoreCache(input);
+    const scores = new Map(unique.map((state) => {
+      const result = {
         assignments: state.assignments,
         unplannedWorkPackages: state.unplannedWorkPackages,
-      }, input),
+      };
+      return [state, activeScoreCache.score(result)] as const;
+    }));
+    const paretoVectors = new Map(unique.map((state) => [
+      state,
+      commonParetoVector(scores.get(state)!.components),
     ]));
     const frontier = unique.filter((candidate) => !unique.some((other) =>
-      other !== candidate && dominates(vectors.get(other)!, vectors.get(candidate)!),
+      other !== candidate && dominates(
+        paretoVectors.get(other)!,
+        paretoVectors.get(candidate)!,
+      ),
     ));
     stats.dominancePrunedStates += unique.length - frontier.length;
     const selected = roundRobinByProfile(
       frontier,
       width,
       profiles,
-      (state, profile) => objectiveVector({
-        assignments: state.assignments,
-        unplannedWorkPackages: state.unplannedWorkPackages,
-      }, withProfile(input, profile)),
-      placementSignature,
+      (state, profile) => profileVector(scores.get(state)!, profile),
+      (state) => scores.get(state)!.signature,
     );
     stats.prunedStates += Math.max(0, frontier.length - selected.length);
     return selected;
@@ -494,6 +543,7 @@ function prunePackageVariants(
   input: PortfolioOptimizerInput,
   width: number,
   stats: PlacementSearchStats,
+  scoreCache?: ComparisonScoreCache,
 ) {
   const profiles = searchProfiles(input);
   if (profiles.length === 1) {
@@ -507,15 +557,23 @@ function prunePackageVariants(
     stats.prunedStates += Math.max(0, variants.length - width);
     return variants.slice(0, width);
   }
-  const vectors = new Map(variants.map((variant) => [
-    variant,
-    [variant.remaining, ...commonParetoVector({
+  const activeScoreCache = scoreCache ?? comparisonScoreCache(input);
+  const scores = new Map(variants.map((variant) => {
+    const result = {
       assignments: variant.state.assignments,
       unplannedWorkPackages: variant.state.unplannedWorkPackages,
-    }, input)],
+    };
+    return [variant, activeScoreCache.score(result)] as const;
+  }));
+  const paretoVectors = new Map(variants.map((variant) => [
+    variant,
+    [variant.remaining, ...commonParetoVector(scores.get(variant)!.components)],
   ]));
   const frontier = variants.filter((candidate) => !variants.some((other) =>
-    other !== candidate && dominates(vectors.get(other)!, vectors.get(candidate)!),
+    other !== candidate && dominates(
+      paretoVectors.get(other)!,
+      paretoVectors.get(candidate)!,
+    ),
   ));
   stats.dominancePrunedStates += variants.length - frontier.length;
   const selected = roundRobinByProfile(
@@ -524,12 +582,9 @@ function prunePackageVariants(
     profiles,
     (variant, profile) => [
       variant.remaining,
-      ...objectiveVector({
-        assignments: variant.state.assignments,
-        unplannedWorkPackages: variant.state.unplannedWorkPackages,
-      }, withProfile(input, profile)),
+      ...profileVector(scores.get(variant)!, profile),
     ],
-    (variant) => `${variant.remaining}:${placementSignature(variant.state)}`,
+    (variant) => `${variant.remaining}:${scores.get(variant)!.signature}`,
   );
   stats.prunedStates += Math.max(0, frontier.length - selected.length);
   return selected;
@@ -540,6 +595,7 @@ function schedulePackageVariants(
   baseState: PlacementState,
   entry: PackageEntry,
   stats: PlacementSearchStats,
+  scoreCache?: ComparisonScoreCache,
 ) {
   const limits = placementLimits(input);
   const { project, workPackage } = entry;
@@ -649,6 +705,7 @@ function schedulePackageVariants(
       input,
       limits.packageVariantWidth,
       stats,
+      scoreCache,
     );
   }
   if (completed.length > 0) return completed;
@@ -669,15 +726,16 @@ function placementSearchForOrder(
   input: PortfolioOptimizerInput,
   order: PackageEntry[],
   stats: PlacementSearchStats,
+  scoreCache?: ComparisonScoreCache,
 ) {
   const limits = placementLimits(input);
   let beam = [initialPlacementState(input)];
   for (const entry of order) {
     const expanded = beam.flatMap((state) =>
-      schedulePackageVariants(input, state, entry, stats),
+      schedulePackageVariants(input, state, entry, stats, scoreCache),
     );
     if (stats.searchLimitReached) return [];
-    beam = prunePlacementStates(expanded, input, limits.beamWidth, stats);
+    beam = prunePlacementStates(expanded, input, limits.beamWidth, stats, scoreCache);
   }
   return beam.map((state) => ({
     assignments: state.assignments,
@@ -778,20 +836,22 @@ export function allocatePortfolioScenarioPlans(
     searchLimitReached: false,
   };
   const limits = placementLimits(sharedInput);
+  const scoreCache = comparisonScoreCache(sharedInput);
   const candidateBySignature = new Map<string, {
     assignments: PlanAssignment[];
     unplannedWorkPackages: UnplannedWorkPackage[];
   }>();
   for (const baseline of baselines.values()) {
-    candidateBySignature.set(placementSignature({ assignments: baseline.assignments }), {
+    const candidate = {
       assignments: baseline.assignments,
       unplannedWorkPackages: baseline.unplannedWorkPackages,
-    });
+    };
+    candidateBySignature.set(planSignature(candidate), candidate);
   }
   const orders = [...orderSearch.uniqueOrders.values()].slice(0, limits.orderLimit);
   for (const order of orders) {
-    for (const candidate of placementSearchForOrder(sharedInput, order, stats)) {
-      candidateBySignature.set(placementSignature({ assignments: candidate.assignments }), candidate);
+    for (const candidate of placementSearchForOrder(sharedInput, order, stats, scoreCache)) {
+      candidateBySignature.set(planSignature(candidate), candidate);
     }
     if (stats.searchLimitReached) break;
   }
@@ -800,22 +860,24 @@ export function allocatePortfolioScenarioPlans(
   const results = new Map<PlanningProfile, ReturnType<typeof allocatePortfolioWork>>();
 
   for (const profile of profiles) {
-    const profileInput = withProfile(sharedInput, profile);
     const v1 = baselines.get(profile)!;
     let best = candidates[0] ?? {
       assignments: v1.assignments,
       unplannedWorkPackages: v1.unplannedWorkPackages,
     };
-    let bestVector = objectiveVector(best, profileInput);
-    let bestSignature = placementSignature({ assignments: best.assignments });
+    let bestScore = scoreCache.score(best);
+    let bestVector = profileVector(bestScore, profile);
+    let bestSignature = bestScore.signature;
     for (const candidate of candidates.slice(1)) {
-      const vector = objectiveVector(candidate, profileInput);
-      const signature = placementSignature({ assignments: candidate.assignments });
+      const score = scoreCache.score(candidate);
+      const vector = profileVector(score, profile);
+      const signature = score.signature;
       if (
         compareVectors(vector, bestVector) < 0
         || (compareVectors(vector, bestVector) === 0 && signature < bestSignature)
       ) {
         best = candidate;
+        bestScore = score;
         bestVector = vector;
         bestSignature = signature;
       }
@@ -839,7 +901,7 @@ export function allocatePortfolioScenarioPlans(
         evaluatedPlans: candidates.length,
         searchLimitReached: orderSearch.searchLimitReached || stats.searchLimitReached,
         runtimeMs: sharedRuntimeMs,
-        objectiveVector: objectiveComponents(best, profileInput),
+        objectiveVector: bestScore.components,
         greedyBaseline: greedyMetrics,
         v1Baseline: v1Metrics,
         optimized: optimizedMetrics,

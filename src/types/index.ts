@@ -289,6 +289,10 @@ export interface PortfolioPlanningScenario {
   maxRecoveryShortfallMinutes: number;
   skillConcentrationBasisPoints: number;
   optimizerRuntimeMs: number;
+  exploredStates: number;
+  prunedStates: number;
+  dominancePrunedStates: number;
+  candidateCount: number;
   searchLimitReached: boolean;
 }
 

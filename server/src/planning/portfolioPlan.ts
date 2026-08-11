@@ -557,6 +557,10 @@ export async function buildPortfolioScenarioComparison(
       maxRecoveryShortfallMinutes: objective.maxRecoveryShortfallMinutes,
       skillConcentrationBasisPoints: objective.skillConcentrationBasisPoints,
       optimizerRuntimeMs: preview.optimizerDiagnostics.runtimeMs,
+      exploredStates: preview.optimizerDiagnostics.exploredStates,
+      prunedStates: preview.optimizerDiagnostics.prunedStates,
+      dominancePrunedStates: preview.optimizerDiagnostics.dominancePrunedStates,
+      candidateCount: preview.optimizerDiagnostics.evaluatedPlans,
       searchLimitReached: preview.optimizerDiagnostics.searchLimitReached,
     });
   }

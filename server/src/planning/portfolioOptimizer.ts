@@ -459,6 +459,13 @@ export function objectiveVector(
 ) {
   const profile = input.planningProfile ?? "BALANCED";
   const components = objectiveComponents(result, input, profile === "RESILIENCE_FIRST");
+  return objectiveVectorFromComponents(components, profile);
+}
+
+export function objectiveVectorFromComponents(
+  components: ReturnType<typeof objectiveComponents>,
+  profile: PlanningProfile,
+) {
   if (profile === "COST_FIRST") {
     return [
       components.criticalUnplannedMinutes,
