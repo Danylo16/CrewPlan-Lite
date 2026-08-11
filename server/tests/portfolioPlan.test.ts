@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildPortfolioPlanPreview } from "../src/planning/portfolioPlan.js";
+import {
+  buildPortfolioPlanPreview,
+  buildPortfolioScenarioComparison,
+} from "../src/planning/portfolioPlan.js";
 import { buildPortfolioResilienceReport } from "../src/planning/portfolioResilience.js";
 
 const mondayToFriday = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"].map((dayOfWeek, id) => ({
@@ -98,6 +101,27 @@ function database(
 }
 
 describe("multi-week portfolio planner", () => {
+  it("compares all profiles against one memoized database snapshot", async () => {
+    const planningDatabase = database([project()]);
+    const comparison = await buildPortfolioScenarioComparison(planningDatabase, {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 1,
+      replaceGenerated: true,
+    });
+
+    expect(comparison.scenarios.map((scenario) => scenario.planningProfile)).toEqual([
+      "BALANCED",
+      "COST_FIRST",
+      "DEADLINE_FIRST",
+      "RESILIENCE_FIRST",
+    ]);
+    expect(comparison.scenarios.every((scenario) => scenario.proposedWorkMinutes === 480)).toBe(true);
+    expect(planningDatabase.employee.findMany).toHaveBeenCalledTimes(2);
+    expect(planningDatabase.project.findMany).toHaveBeenCalledTimes(1);
+    expect(planningDatabase.projectRequirement.findMany).toHaveBeenCalledTimes(1);
+    expect(planningDatabase.shift.findMany).toHaveBeenCalledTimes(2);
+  });
+
   it("fully recovers a scheduled employee absence when an equivalent replacement exists", async () => {
     const planningDatabase = database(
       [project()],

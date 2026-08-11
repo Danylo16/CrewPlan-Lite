@@ -2,17 +2,27 @@ import { Router } from "express";
 import { z } from "zod";
 import { Prisma } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
-import { buildPortfolioPlanPreview } from "../planning/portfolioPlan.js";
+import {
+  buildPortfolioPlanPreview,
+  buildPortfolioScenarioComparison,
+} from "../planning/portfolioPlan.js";
 import { buildPortfolioResilienceReport } from "../planning/portfolioResilience.js";
 import { getWeekWindowUtc, parseWeekStart } from "../scheduling/timeAdapter.js";
 
 export const portfolioPlanRouter = Router();
 
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const planningProfileSchema = z.enum([
+  "BALANCED",
+  "COST_FIRST",
+  "DEADLINE_FIRST",
+  "RESILIENCE_FIRST",
+]);
 const requestSchema = z.object({
   horizonStart: z.string(),
   horizonWeeks: z.number().int().min(1).max(12).default(6),
   replaceGenerated: z.boolean().default(true),
+  planningProfile: planningProfileSchema.default("BALANCED"),
 });
 const applySchema = requestSchema.extend({ previewId: hashSchema, inputVersion: hashSchema });
 const resilienceSchema = applySchema;
@@ -41,6 +51,16 @@ portfolioPlanRouter.post("/preview", async (request, response) => {
   }
 });
 
+portfolioPlanRouter.post("/scenarios", async (request, response) => {
+  const result = requestSchema.omit({ planningProfile: true }).safeParse(request.body);
+  if (!result.success) return response.status(400).json({ code: "VALIDATION_ERROR", message: "Invalid scenario comparison request", errors: result.error.issues });
+  try {
+    return response.json(await buildPortfolioScenarioComparison(prisma, result.data));
+  } catch (error) {
+    return planningError(error, response);
+  }
+});
+
 portfolioPlanRouter.post("/resilience", async (request, response) => {
   const result = resilienceSchema.safeParse(request.body);
   if (!result.success) return response.status(400).json({ code: "VALIDATION_ERROR", message: "Invalid resilience request", errors: result.error.issues });
@@ -63,6 +83,7 @@ portfolioPlanRouter.post("/apply", async (request, response) => {
         horizonStart: result.data.horizonStart,
         horizonWeeks: result.data.horizonWeeks,
         replaceGenerated: result.data.replaceGenerated,
+        planningProfile: result.data.planningProfile,
       });
       if (preview.previewId !== result.data.previewId || preview.inputVersion !== result.data.inputVersion) {
         throw new Error("PORTFOLIO_PREVIEW_STALE");
@@ -89,7 +110,11 @@ portfolioPlanRouter.post("/apply", async (request, response) => {
           horizonStart,
           horizonEndExclusive,
           replaceMode: result.data.replaceGenerated ? "REPLACE_GENERATED" : "KEEP_EXISTING",
-          configuration: { horizonWeeks: result.data.horizonWeeks, timezone: preview.timezone },
+          configuration: {
+            horizonWeeks: result.data.horizonWeeks,
+            timezone: preview.timezone,
+            planningProfile: result.data.planningProfile,
+          },
           metrics: preview.metrics,
         },
       });

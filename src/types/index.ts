@@ -273,6 +273,34 @@ export interface PortfolioOptimizerDiagnostics {
   improvementVsV1: PortfolioPlanCostBaseline;
 }
 
+export interface PortfolioPlanningScenario {
+  planningProfile: PlanningProfile;
+  previewId: string;
+  inputVersion: string;
+  proposedWorkMinutes: number;
+  unplannedWorkPackages: number;
+  unplannedMinutes: number;
+  overtimeMinutes: number;
+  workPackageCostCents: number;
+  plannedCostCents: number;
+  hardDeadlineExposureMinutes: number;
+  softDeadlineExposureMinutes: number;
+  singlePointExposureMinutes: number;
+  maxRecoveryShortfallMinutes: number;
+  skillConcentrationBasisPoints: number;
+  optimizerRuntimeMs: number;
+  searchLimitReached: boolean;
+}
+
+export interface PortfolioScenarioComparison {
+  comparisonId: string;
+  horizonStart: string;
+  horizonWeeks: number;
+  replaceGenerated: boolean;
+  runtimeMs: number;
+  scenarios: PortfolioPlanningScenario[];
+}
+
 export interface PortfolioProjectCostWeek {
   weekStart: string;
   plannedCostCents: number;

@@ -21,6 +21,9 @@ export async function buildPortfolioResilienceReport(
     horizonStart: options.horizonStart,
     horizonWeeks: options.horizonWeeks,
     replaceGenerated: options.replaceGenerated,
+    ...(options.planningProfile
+      ? { planningProfile: options.planningProfile }
+      : {}),
   };
   const baseline = await buildPortfolioPlanPreview(database, planOptions);
   if (baseline.previewId !== options.previewId || baseline.inputVersion !== options.inputVersion) {
