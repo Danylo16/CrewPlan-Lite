@@ -144,6 +144,9 @@ function placementCandidates(
   remaining: number,
   packageIntervals: Interval[],
 ) {
+  const lookaheadDays = (input.planningProfile ?? "BALANCED") === "COST_FIRST"
+    ? PLACEMENT_LOOKAHEAD_DAYS
+    : 1;
   const collected = [] as Array<{
     employee: PortfolioOptimizerInput["employees"][number];
     interval: Interval;
@@ -223,7 +226,7 @@ function placementCandidates(
     }
     if (
       firstCandidateDay !== null
-      && day.diff(firstCandidateDay, "days").days >= PLACEMENT_LOOKAHEAD_DAYS - 1
+      && day.diff(firstCandidateDay, "days").days >= lookaheadDays - 1
     ) break;
   }
   return collected.sort((first, second) => {
