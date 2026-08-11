@@ -3,6 +3,7 @@ import {
   buildPortfolioPlanPreview,
   buildPortfolioScenarioComparison,
 } from "../src/planning/portfolioPlan.js";
+import { allocatePortfolioWork } from "../src/planning/portfolioPlacementOptimizer.js";
 import { buildPortfolioResilienceReport } from "../src/planning/portfolioResilience.js";
 
 const mondayToFriday = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"].map((dayOfWeek, id) => ({
@@ -236,15 +237,18 @@ describe("multi-week portfolio planner", () => {
       replaceGenerated: true,
     };
     const preview = await buildPortfolioPlanPreview(planningDatabase, options);
+    const optimizerRunner = vi.fn(allocatePortfolioWork);
     const report = await buildPortfolioResilienceReport(planningDatabase, {
       ...options,
       previewId: preview.previewId,
       inputVersion: preview.inputVersion,
+      optimizerRunner,
     });
 
-    expect(report.algorithmVersion).toBe("portfolio-resilience-n-minus-one-v2");
+    expect(report.algorithmVersion).toBe("portfolio-resilience-n-minus-one-v3");
     expect(report.testedAbsences).toBe(13);
     expect(report.scenarios).toHaveLength(13);
+    expect(optimizerRunner).toHaveBeenCalledTimes(1);
     expect(planningDatabase.employee.findMany).toHaveBeenCalledTimes(4);
     expect(planningDatabase.project.findMany).toHaveBeenCalledTimes(2);
     expect(planningDatabase.projectRequirement.findMany).toHaveBeenCalledTimes(2);
