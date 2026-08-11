@@ -2,9 +2,30 @@ import { useMemo, useState } from "react";
 import { apiRequest } from "../api/client";
 import type {
   AppliedPortfolioPlan,
+  PlanningProfile,
   PortfolioPlanPreview,
   PortfolioResilienceReport,
+  PortfolioScenarioComparison,
 } from "../types";
+
+const PROFILE_CONTENT: Record<PlanningProfile, { label: string; description: string }> = {
+  BALANCED: {
+    label: "Balanced",
+    description: "Coverage and deadlines first, then cost and workload balance.",
+  },
+  COST_FIRST: {
+    label: "Cost first",
+    description: "Accepts more schedule exposure when that materially lowers labor cost.",
+  },
+  DEADLINE_FIRST: {
+    label: "Deadline first",
+    description: "Minimizes hard and soft deadline exposure before cost.",
+  },
+  RESILIENCE_FIRST: {
+    label: "Resilience first",
+    description: "Spreads scarce-skill work to reduce single-person concentration.",
+  },
+};
 
 function nextMonday() {
   const date = new Date();
@@ -47,6 +68,19 @@ function costOutcome(greedyCents: number, optimizedCents: number) {
     : `${money(difference)} additional`;
 }
 
+function signedCostDelta(cents: number) {
+  if (cents === 0) return "same cost";
+  return cents < 0 ? `${money(Math.abs(cents))} less` : `${money(cents)} more`;
+}
+
+function signedPercentDelta(basisPoints: number) {
+  if (basisPoints === 0) return "same concentration";
+  const points = Math.abs(basisPoints) / 100;
+  return basisPoints < 0
+    ? `${points.toFixed(0)}pp less concentrated`
+    : `${points.toFixed(0)}pp more concentrated`;
+}
+
 function weekOf(value: string) {
   const date = new Date(value);
   const local = new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -62,9 +96,12 @@ export function PlannerPage() {
   const [horizonStart, setHorizonStart] = useState(nextMonday);
   const [horizonWeeks, setHorizonWeeks] = useState(6);
   const [replaceGenerated, setReplaceGenerated] = useState(true);
+  const [planningProfile, setPlanningProfile] = useState<PlanningProfile>("BALANCED");
   const [preview, setPreview] = useState<PortfolioPlanPreview | null>(null);
+  const [comparison, setComparison] = useState<PortfolioScenarioComparison | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isComparing, setIsComparing] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [applied, setApplied] = useState<AppliedPortfolioPlan | null>(null);
   const [resilience, setResilience] = useState<PortfolioResilienceReport | null>(null);
@@ -106,8 +143,11 @@ export function PlannerPage() {
       || optimized.overtimeMinutes < greedyBaseline.overtimeMinutes
       || optimized.laborCostCents < greedyBaseline.laborCostCents;
   }, [preview]);
+  const balancedScenario = comparison?.scenarios.find(
+    (scenario) => scenario.planningProfile === "BALANCED",
+  );
 
-  async function generate() {
+  async function generate(profile = planningProfile) {
     setIsGenerating(true);
     setError(null);
     setApplied(null);
@@ -115,7 +155,12 @@ export function PlannerPage() {
     try {
       setPreview(await apiRequest<PortfolioPlanPreview>("/portfolio-plan/preview", {
         method: "POST",
-        body: JSON.stringify({ horizonStart, horizonWeeks, replaceGenerated }),
+        body: JSON.stringify({
+          horizonStart,
+          horizonWeeks,
+          replaceGenerated,
+          planningProfile: profile,
+        }),
       }));
     } catch (generationError) {
       setPreview(null);
@@ -123,6 +168,32 @@ export function PlannerPage() {
     } finally {
       setIsGenerating(false);
     }
+  }
+
+  async function compareScenarios() {
+    setIsComparing(true);
+    setError(null);
+    setApplied(null);
+    setResilience(null);
+    setPreview(null);
+    try {
+      setComparison(await apiRequest<PortfolioScenarioComparison>("/portfolio-plan/scenarios", {
+        method: "POST",
+        body: JSON.stringify({ horizonStart, horizonWeeks, replaceGenerated }),
+      }));
+    } catch (comparisonError) {
+      setComparison(null);
+      setError(comparisonError instanceof Error
+        ? comparisonError.message
+        : "Scenario comparison failed");
+    } finally {
+      setIsComparing(false);
+    }
+  }
+
+  async function reviewScenario(profile: PlanningProfile) {
+    setPlanningProfile(profile);
+    await generate(profile);
   }
 
   async function testResilience() {
@@ -138,6 +209,7 @@ export function PlannerPage() {
           replaceGenerated: preview.replaceGenerated,
           previewId: preview.previewId,
           inputVersion: preview.inputVersion,
+          planningProfile: preview.planningProfile,
         }),
       }));
     } catch (resilienceError) {
@@ -157,7 +229,7 @@ export function PlannerPage() {
     try {
       const result = await apiRequest<AppliedPortfolioPlan>("/portfolio-plan/apply", {
         method: "POST",
-        body: JSON.stringify({ horizonStart: preview.horizonStart, horizonWeeks: preview.horizonWeeks, replaceGenerated: preview.replaceGenerated, previewId: preview.previewId, inputVersion: preview.inputVersion }),
+        body: JSON.stringify({ horizonStart: preview.horizonStart, horizonWeeks: preview.horizonWeeks, replaceGenerated: preview.replaceGenerated, planningProfile: preview.planningProfile, previewId: preview.previewId, inputVersion: preview.inputVersion }),
       });
       setApplied(result);
       setPreview(null);
@@ -175,17 +247,46 @@ export function PlannerPage() {
     </div>
 
     <div className="panel planner-controls">
-      <label>First week<input type="date" value={horizonStart} onChange={(event) => { setHorizonStart(event.target.value); setPreview(null); }} /></label>
-      <label>Horizon<select value={horizonWeeks} onChange={(event) => { setHorizonWeeks(Number(event.target.value)); setPreview(null); }}>{[2,4,6,8,12].map((weeks) => <option value={weeks} key={weeks}>{weeks} weeks</option>)}</select></label>
-      <label className="planner-replace"><input type="checkbox" checked={replaceGenerated} onChange={(event) => { setReplaceGenerated(event.target.checked); setPreview(null); }} /><span><strong>Replace generated plan</strong><small>Manual and legacy shifts stay untouched.</small></span></label>
-      <button className="primary-button" disabled={isGenerating} type="button" onClick={() => void generate()}>{isGenerating ? "Planning…" : "Generate preview"}</button>
+      <label>First week<input type="date" value={horizonStart} onChange={(event) => { setHorizonStart(event.target.value); setPreview(null); setComparison(null); }} /></label>
+      <label>Horizon<select value={horizonWeeks} onChange={(event) => { setHorizonWeeks(Number(event.target.value)); setPreview(null); setComparison(null); }}>{[2,4,6,8,12].map((weeks) => <option value={weeks} key={weeks}>{weeks} weeks</option>)}</select></label>
+      <label>Planning objective<select value={planningProfile} onChange={(event) => { setPlanningProfile(event.target.value as PlanningProfile); setPreview(null); setResilience(null); }}>{Object.entries(PROFILE_CONTENT).map(([profile, content]) => <option value={profile} key={profile}>{content.label}</option>)}</select></label>
+      <label className="planner-replace"><input type="checkbox" checked={replaceGenerated} onChange={(event) => { setReplaceGenerated(event.target.checked); setPreview(null); setComparison(null); }} /><span><strong>Replace generated plan</strong><small>Manual and legacy shifts stay untouched.</small></span></label>
+      <div className="planner-control-actions"><button className="secondary-button" disabled={isComparing || isGenerating} type="button" onClick={() => void compareScenarios()}>{isComparing ? "Comparing four plans…" : "Compare strategies"}</button><button className="primary-button" disabled={isGenerating || isComparing} type="button" onClick={() => void generate()}>{isGenerating ? "Planning…" : `Preview ${PROFILE_CONTENT[planningProfile].label}`}</button></div>
     </div>
     {error && <div className="error-message portfolio-error">{error}</div>}
     {applied && <div className="planner-success"><strong>Plan applied.</strong><span>{applied.createdShifts} allocations created, {applied.deletedShifts} generated allocations replaced.</span></div>}
 
-    {!preview && !applied && <div className="planner-empty"><div className="planner-empty-icon">↗</div><h3>Build a defensible delivery plan</h3><p>The planner reserves fixed coverage first, then schedules work packages around skills, dependencies, availability and weekly limits.</p></div>}
+    {comparison && <section className="planner-dashboard-section scenario-comparison">
+      <div className="planner-section-heading"><div><span>Decision support</span><h3>One Pareto frontier, four planning objectives</h3><p>All objectives select from the same multi-objective candidate pool, so cost, deadline and resilience trade-offs are directly comparable. Review recomputes the selected objective with the full optimizer before Apply or N−1 validation.</p></div><div className="scenario-runtime"><span>Pareto search runtime</span><strong>{(comparison.runtimeMs / 1000).toFixed(1)}s</strong></div></div>
+      <div className="scenario-grid">{comparison.scenarios.map((scenario) => {
+        const content = PROFILE_CONTENT[scenario.planningProfile];
+        const deadlineExposure = scenario.hardDeadlineExposureMinutes + scenario.softDeadlineExposureMinutes;
+        const balancedDeadlineExposure = balancedScenario
+          ? balancedScenario.hardDeadlineExposureMinutes
+            + balancedScenario.softDeadlineExposureMinutes
+          : 0;
+        const costDelta = balancedScenario
+          ? scenario.workPackageCostCents - balancedScenario.workPackageCostCents
+          : 0;
+        const deadlineDelta = deadlineExposure - balancedDeadlineExposure;
+        const concentrationDelta = balancedScenario
+          ? scenario.skillConcentrationBasisPoints
+            - balancedScenario.skillConcentrationBasisPoints
+          : 0;
+        return <article className={`scenario-card ${planningProfile === scenario.planningProfile ? "scenario-selected" : ""}`} key={scenario.planningProfile}>
+          <div><span>{scenario.planningProfile.replaceAll("_", " ")}</span><h4>{content.label}</h4><p>{content.description}</p></div>
+          <dl><div><dt>Planned / unplanned</dt><dd>{hours(scenario.proposedWorkMinutes)} / {hours(scenario.unplannedMinutes)}</dd></div><div><dt>Work Package cost</dt><dd>{money(scenario.workPackageCostCents)}</dd></div><div><dt>Deadline exposure</dt><dd>{hours(deadlineExposure)}</dd></div><div><dt>Single-point exposure</dt><dd>{hours(scenario.singlePointExposureMinutes)}</dd></div><div><dt>Skill concentration</dt><dd>{(scenario.skillConcentrationBasisPoints / 100).toFixed(0)}%</dd></div></dl>
+          <div className="scenario-deltas"><strong>{scenario.planningProfile === "BALANCED" ? "Comparison baseline" : "Difference from Balanced"}</strong>{scenario.planningProfile !== "BALANCED" && <><span>{signedCostDelta(costDelta)}</span><span>{deadlineDelta === 0 ? "same deadline exposure" : `${hours(Math.abs(deadlineDelta))} ${deadlineDelta < 0 ? "less" : "more"} deadline exposure`}</span><span>{signedPercentDelta(concentrationDelta)}</span></>}</div>
+          <button className={planningProfile === scenario.planningProfile ? "primary-button" : "secondary-button"} disabled={isGenerating} type="button" onClick={() => void reviewScenario(scenario.planningProfile)}>{isGenerating && planningProfile === scenario.planningProfile ? "Building preview…" : "Review this plan"}</button>
+        </article>;
+      })}</div>
+      <div className="scenario-note"><strong>Resilience here is a search proxy, not the N−1 result.</strong><span>After selecting a scenario, run the full deterministic employee-removal stress test on its preview.</span></div>
+    </section>}
+
+    {!preview && !applied && !comparison && <div className="planner-empty"><div className="planner-empty-icon">↗</div><h3>Build a defensible delivery plan</h3><p>Generate one objective directly, or compare all four strategies against the same portfolio snapshot.</p></div>}
 
     {preview && <>
+      <div className="selected-profile"><div><span>Selected objective</span><strong>{PROFILE_CONTENT[preview.planningProfile].label}</strong><small>{PROFILE_CONTENT[preview.planningProfile].description}</small></div>{comparison && <button className="secondary-button" type="button" onClick={() => { setPreview(null); setResilience(null); }}>Back to comparison</button>}</div>
       <div className="planner-summary">
         <div><span>Planned work</span><strong>{hours(preview.metrics.proposedWorkMinutes)}</strong><small>{preview.metrics.assignedWorkPackages} work packages</small></div>
         <div><span>Fixed coverage</span><strong>{hours(preview.metrics.proposedFixedCoverageMinutes)}</strong><small>reserved before project work</small></div>

@@ -6,6 +6,18 @@ interface ApiError {
   message?: string;
 }
 
+async function responseBody(response: Response) {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new Error(
+      response.ok
+        ? "API deployment returned HTML instead of JSON. The backend preview is not deployed for this branch."
+        : `API endpoint is unavailable in this deployment (${response.status}).`,
+    );
+  }
+  return response.json() as Promise<unknown>;
+}
+
 export async function apiRequest<T>(
   path: string,
   options?: RequestInit,
@@ -19,7 +31,7 @@ export async function apiRequest<T>(
   });
 
   if (!response.ok) {
-    const error = (await response.json()) as ApiError;
+    const error = (await responseBody(response)) as ApiError;
 
     throw new Error(error.message ?? "Request failed");
   }
@@ -28,5 +40,5 @@ export async function apiRequest<T>(
     return undefined as T;
   }
 
-  return response.json() as Promise<T>;
+  return responseBody(response) as Promise<T>;
 }

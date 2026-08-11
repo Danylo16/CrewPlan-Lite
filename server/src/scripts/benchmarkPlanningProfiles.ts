@@ -1,6 +1,9 @@
 import { performance } from "node:perf_hooks";
 import { DateTime } from "luxon";
-import { allocatePortfolioWork } from "../planning/portfolioPlacementOptimizer.js";
+import {
+  allocatePortfolioScenarioPlans,
+  allocatePortfolioWork,
+} from "../planning/portfolioPlacementOptimizer.js";
 import type {
   OptimizerEmployee,
   OptimizerProject,
@@ -128,5 +131,47 @@ if (
   || resilient.costEuro <= cheapConcentrated.costEuro
 ) throw new Error("Resilience profile did not pay for lower concentration risk");
 
-if (process.argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
-else console.table(report);
+const sharedReport = scenarios.flatMap((scenario) => {
+  const startedAt = performance.now();
+  const results = allocatePortfolioScenarioPlans(
+    benchmarkInput("BALANCED", scenario),
+    profiles,
+  );
+  const runtimeMs = Math.round((performance.now() - startedAt) * 100) / 100;
+  return profiles.map((profile) => {
+    const result = results.get(profile)!;
+    return {
+      scenario,
+      profile,
+      costEuro: result.optimizerDiagnostics.optimized.laborCostCents / 100,
+      deadlineExposureMin:
+        result.optimizerDiagnostics.objectiveVector.softDeadlineExposureMinutes,
+      concentrationBps:
+        result.optimizerDiagnostics.objectiveVector.skillConcentrationBasisPoints,
+      runtimeMs,
+      candidates: result.optimizerDiagnostics.evaluatedPlans,
+    };
+  });
+});
+const sharedByKey = new Map(
+  sharedReport.map((item) => [`${item.scenario}:${item.profile}`, item]),
+);
+if (
+  sharedByKey.get("COST_VS_DEADLINE:COST_FIRST")!.costEuro
+    >= sharedByKey.get("COST_VS_DEADLINE:DEADLINE_FIRST")!.costEuro
+  || sharedByKey.get("COST_VS_DEADLINE:COST_FIRST")!.deadlineExposureMin
+    <= sharedByKey.get("COST_VS_DEADLINE:DEADLINE_FIRST")!.deadlineExposureMin
+) throw new Error("Shared Pareto search lost the cost/deadline trade-off");
+if (
+  sharedByKey.get("COST_VS_RESILIENCE:RESILIENCE_FIRST")!.concentrationBps
+    >= sharedByKey.get("COST_VS_RESILIENCE:COST_FIRST")!.concentrationBps
+  || sharedByKey.get("COST_VS_RESILIENCE:RESILIENCE_FIRST")!.costEuro
+    <= sharedByKey.get("COST_VS_RESILIENCE:COST_FIRST")!.costEuro
+) throw new Error("Shared Pareto search lost the cost/resilience trade-off");
+
+if (process.argv.includes("--json")) console.log(JSON.stringify({ report, sharedReport }, null, 2));
+else {
+  console.table(report);
+  console.log("Shared Pareto frontier");
+  console.table(sharedReport);
+}

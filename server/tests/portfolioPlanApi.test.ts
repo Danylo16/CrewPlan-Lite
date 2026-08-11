@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 
 const previewMock = vi.hoisted(() => vi.fn());
+const scenariosMock = vi.hoisted(() => vi.fn());
 const resilienceMock = vi.hoisted(() => vi.fn());
 const prismaMock = vi.hoisted(() => ({
   shift: { deleteMany: vi.fn(), createMany: vi.fn() },
@@ -10,7 +11,10 @@ const prismaMock = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/lib/prisma.js", () => ({ prisma: prismaMock }));
-vi.mock("../src/planning/portfolioPlan.js", () => ({ buildPortfolioPlanPreview: previewMock }));
+vi.mock("../src/planning/portfolioPlan.js", () => ({
+  buildPortfolioPlanPreview: previewMock,
+  buildPortfolioScenarioComparison: scenariosMock,
+}));
 vi.mock("../src/planning/portfolioResilience.js", () => ({ buildPortfolioResilienceReport: resilienceMock }));
 
 import { app } from "../src/app.js";
@@ -23,6 +27,7 @@ const preview = {
   horizonStart: "2026-08-10",
   horizonEndExclusive: "2026-08-24",
   horizonWeeks: 2,
+  planningProfile: "BALANCED",
   timezone: "Europe/Vienna",
   replaceGenerated: true,
   assignments: [{
@@ -52,6 +57,14 @@ describe("portfolio planning API", () => {
     prismaMock.planningRun.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.planningRun.create.mockResolvedValue({ id: "11111111-1111-1111-1111-111111111111" });
     previewMock.mockResolvedValue(preview);
+    scenariosMock.mockResolvedValue({
+      comparisonId: hash,
+      horizonStart: "2026-08-10",
+      horizonWeeks: 2,
+      replaceGenerated: true,
+      runtimeMs: 20,
+      scenarios: [{ planningProfile: "BALANCED", plannedCostCents: 24_000 }],
+    });
     resilienceMock.mockResolvedValue({
       previewId: hash,
       inputVersion: version,
@@ -68,6 +81,7 @@ describe("portfolio planning API", () => {
       horizonStart: "2026-08-10",
       horizonWeeks: 2,
       replaceGenerated: true,
+      planningProfile: "BALANCED",
       previewId: hash,
       inputVersion: version,
     });
@@ -77,6 +91,7 @@ describe("portfolio planning API", () => {
       horizonStart: "2026-08-10",
       horizonWeeks: 2,
       replaceGenerated: true,
+      planningProfile: "BALANCED",
     });
     expect(response.body.createdShifts).toBe(2);
     expect(prismaMock.shift.deleteMany).toHaveBeenCalledWith({
@@ -90,6 +105,23 @@ describe("portfolio planning API", () => {
     });
   });
 
+  it("compares every planning profile without applying a plan", async () => {
+    const response = await request(app).post("/api/portfolio-plan/scenarios").send({
+      horizonStart: "2026-08-10",
+      horizonWeeks: 2,
+      replaceGenerated: true,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.scenarios).toHaveLength(1);
+    expect(scenariosMock).toHaveBeenCalledWith(prismaMock, {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 2,
+      replaceGenerated: true,
+    });
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
   it("rejects a stale preview without deleting shifts", async () => {
     previewMock.mockResolvedValue({ ...preview, previewId: "c".repeat(64) });
     const response = await request(app).post("/api/portfolio-plan/apply").send({
@@ -98,6 +130,7 @@ describe("portfolio planning API", () => {
       replaceGenerated: true,
       previewId: hash,
       inputVersion: version,
+      planningProfile: "BALANCED",
     });
 
     expect(response.status).toBe(409);
@@ -112,6 +145,7 @@ describe("portfolio planning API", () => {
       replaceGenerated: true,
       previewId: hash,
       inputVersion: version,
+      planningProfile: "BALANCED",
     });
 
     expect(response.status).toBe(200);
@@ -122,6 +156,7 @@ describe("portfolio planning API", () => {
       replaceGenerated: true,
       previewId: hash,
       inputVersion: version,
+      planningProfile: "BALANCED",
     });
   });
 });

@@ -4,8 +4,15 @@ import type { Prisma } from "../generated/prisma/client.js";
 import { buildSchedulePreview } from "../scheduling/schedulePreview.js";
 import { allocationCostBreakdown } from "../scheduling/scoring.js";
 import { SCHEDULE_TIME_ZONE } from "../scheduling/timeAdapter.js";
-import { allocatePortfolioWork } from "./portfolioPlacementOptimizer.js";
-import type { Interval, PlanningProfile } from "./portfolioOptimizer.js";
+import {
+  allocatePortfolioScenarioPlans,
+  allocatePortfolioWork,
+} from "./portfolioPlacementOptimizer.js";
+import type {
+  Interval,
+  OptimizerSearchMode,
+  PlanningProfile,
+} from "./portfolioOptimizer.js";
 
 const MAX_HORIZON_WEEKS = 12;
 const MAX_WORK_PACKAGES = 150;
@@ -21,6 +28,44 @@ export interface PortfolioPlanOptions {
   replaceGenerated: boolean;
   excludedEmployeeIds?: number[];
   planningProfile?: PlanningProfile;
+  optimizerSearchMode?: OptimizerSearchMode;
+  optimizerRunner?: typeof allocatePortfolioWork;
+}
+
+const PLANNING_PROFILES: PlanningProfile[] = [
+  "BALANCED",
+  "COST_FIRST",
+  "DEADLINE_FIRST",
+  "RESILIENCE_FIRST",
+];
+
+type ReadDelegate = {
+  findMany(args: unknown): Promise<unknown>;
+};
+
+function memoizedDelegate(delegate: ReadDelegate) {
+  const reads = new Map<string, Promise<unknown>>();
+  return {
+    findMany(args: unknown) {
+      const key = JSON.stringify(args);
+      const existing = reads.get(key);
+      if (existing) return existing;
+      const result = delegate.findMany(args);
+      reads.set(key, result);
+      return result;
+    },
+  };
+}
+
+function snapshotDatabase(database: PlanningDatabase): PlanningDatabase {
+  return {
+    employee: memoizedDelegate(database.employee as unknown as ReadDelegate),
+    project: memoizedDelegate(database.project as unknown as ReadDelegate),
+    projectRequirement: memoizedDelegate(
+      database.projectRequirement as unknown as ReadDelegate,
+    ),
+    shift: memoizedDelegate(database.shift as unknown as ReadDelegate),
+  } as PlanningDatabase;
 }
 
 interface CostedInterval extends Interval {
@@ -162,7 +207,7 @@ export async function buildPortfolioPlanPreview(
     ]);
   }
 
-  const { assignments, unplannedWorkPackages, optimizerDiagnostics } = allocatePortfolioWork({
+  const optimizerInput = {
     start,
     end,
     employees,
@@ -182,7 +227,11 @@ export async function buildPortfolioPlanPreview(
     futurePlannedByPackage,
     futurePlannedIntervalsByPackage,
     planningProfile: options.planningProfile ?? "BALANCED",
-  });
+    searchMode: options.optimizerSearchMode ?? "FULL",
+  };
+  const { assignments, unplannedWorkPackages, optimizerDiagnostics } = (
+    options.optimizerRunner ?? allocatePortfolioWork
+  )(optimizerInput);
   const retainedAllocations: CostedInterval[] = availablePreservedHorizonShifts.map((shift) => ({
     employeeId: shift.employeeId,
     projectId: shift.projectId,
@@ -468,5 +517,74 @@ export async function buildPortfolioPlanPreview(
       unfilledCriticalFixedCoveragePositions,
       criticalUnplannedWorkPackages,
     },
+  };
+}
+
+export async function buildPortfolioScenarioComparison(
+  database: PlanningDatabase,
+  options: Omit<PortfolioPlanOptions, "planningProfile" | "excludedEmployeeIds">,
+) {
+  const startedAt = Date.now();
+  const cachedDatabase = snapshotDatabase(database);
+  const scenarios = [];
+  let sharedPlans: ReturnType<typeof allocatePortfolioScenarioPlans> | null = null;
+  const sharedRunner: typeof allocatePortfolioWork = (input) => {
+    sharedPlans ??= allocatePortfolioScenarioPlans(input, PLANNING_PROFILES);
+    return sharedPlans.get(input.planningProfile ?? "BALANCED")!;
+  };
+
+  for (const planningProfile of PLANNING_PROFILES) {
+    const preview = await buildPortfolioPlanPreview(cachedDatabase, {
+      ...options,
+      planningProfile,
+      optimizerSearchMode: "COMPARISON",
+      optimizerRunner: sharedRunner,
+    });
+    const objective = preview.optimizerDiagnostics.objectiveVector;
+    scenarios.push({
+      planningProfile,
+      previewId: preview.previewId,
+      inputVersion: preview.inputVersion,
+      proposedWorkMinutes: preview.metrics.proposedWorkMinutes,
+      unplannedWorkPackages: preview.metrics.unplannedWorkPackages,
+      unplannedMinutes: preview.optimizerDiagnostics.optimized.unplannedMinutes,
+      overtimeMinutes: preview.metrics.overtimeMinutes,
+      workPackageCostCents: preview.metrics.workPackageCostCents,
+      plannedCostCents: preview.metrics.plannedCostCents,
+      hardDeadlineExposureMinutes: objective.hardDeadlineExposureMinutes,
+      softDeadlineExposureMinutes: objective.softDeadlineExposureMinutes,
+      singlePointExposureMinutes: objective.singlePointExposureMinutes,
+      maxRecoveryShortfallMinutes: objective.maxRecoveryShortfallMinutes,
+      skillConcentrationBasisPoints: objective.skillConcentrationBasisPoints,
+      optimizerRuntimeMs: preview.optimizerDiagnostics.runtimeMs,
+      orderExploredStates: preview.optimizerDiagnostics.orderExploredStates,
+      placementExploredStates: preview.optimizerDiagnostics.placementExploredStates,
+      orderPrunedStates: preview.optimizerDiagnostics.orderPrunedStates,
+      placementPrunedStates: preview.optimizerDiagnostics.placementPrunedStates,
+      placementStateLimit: preview.optimizerDiagnostics.placementStateLimit,
+      exploredStates: preview.optimizerDiagnostics.exploredStates,
+      prunedStates: preview.optimizerDiagnostics.prunedStates,
+      dominancePrunedStates: preview.optimizerDiagnostics.dominancePrunedStates,
+      candidateCount: preview.optimizerDiagnostics.evaluatedPlans,
+      searchLimitReached: preview.optimizerDiagnostics.searchLimitReached,
+    });
+  }
+
+  return {
+    comparisonId: digest({
+      horizonStart: options.horizonStart,
+      horizonWeeks: options.horizonWeeks,
+      replaceGenerated: options.replaceGenerated,
+      scenarios: scenarios.map((scenario) => ({
+        planningProfile: scenario.planningProfile,
+        inputVersion: scenario.inputVersion,
+      })),
+    }),
+    horizonStart: options.horizonStart,
+    horizonWeeks: options.horizonWeeks,
+    replaceGenerated: options.replaceGenerated,
+    comparisonMode: "SHARED_PARETO_FRONTIER" as const,
+    runtimeMs: Date.now() - startedAt,
+    scenarios,
   };
 }

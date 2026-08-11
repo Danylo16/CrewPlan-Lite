@@ -1,6 +1,9 @@
 import { DateTime } from "luxon";
 import { describe, expect, it } from "vitest";
-import { allocatePortfolioWork } from "../src/planning/portfolioPlacementOptimizer.js";
+import {
+  allocatePortfolioScenarioPlans,
+  allocatePortfolioWork,
+} from "../src/planning/portfolioPlacementOptimizer.js";
 import type {
   OptimizerEmployee,
   OptimizerProject,
@@ -135,5 +138,87 @@ describe("portfolio planning profiles", () => {
       hardDeadlineExposureMinutes: 0,
       singlePointExposureMinutes: 480,
     });
+  });
+
+  it("uses a smaller deterministic search budget for scenario shortlists", () => {
+    const baseInput = input(
+      "BALANCED",
+      [employee(1, "Anna", 5_000), employee(2, "Backup", 5_500)],
+      project(960, null),
+    );
+    const full = allocatePortfolioWork(baseInput);
+    const comparison = allocatePortfolioWork({
+      ...baseInput,
+      searchMode: "COMPARISON",
+    });
+
+    expect(full.optimizerDiagnostics).toMatchObject({
+      searchMode: "FULL",
+      beamWidth: 6,
+      packageVariantWidth: 3,
+      branchWidth: 3,
+    });
+    expect(comparison.optimizerDiagnostics).toMatchObject({
+      searchMode: "COMPARISON",
+      beamWidth: 3,
+      packageVariantWidth: 2,
+      branchWidth: 2,
+    });
+    expect(comparison.optimizerDiagnostics.optimized.plannedMinutes).toBe(960);
+  });
+
+  it("selects profile trade-offs from one shared Pareto candidate pool", () => {
+    const employees = [
+      employee(1, "Available before deadline", 8_000, ["MONDAY"]),
+      employee(2, "Cheaper after deadline", 4_000, ["TUESDAY"]),
+    ];
+    const portfolioProject = project(480, new Date("2026-08-10T00:00:00.000Z"));
+    const plans = allocatePortfolioScenarioPlans(
+      input("BALANCED", employees, portfolioProject),
+      ["BALANCED", "COST_FIRST", "DEADLINE_FIRST", "RESILIENCE_FIRST"],
+    );
+    const costFirst = plans.get("COST_FIRST")!;
+    const deadlineFirst = plans.get("DEADLINE_FIRST")!;
+
+    expect(costFirst.assignments[0]?.employeeId).toBe(2);
+    expect(deadlineFirst.assignments[0]?.employeeId).toBe(1);
+    expect(costFirst.optimizerDiagnostics.optimized.laborCostCents)
+      .toBeLessThan(deadlineFirst.optimizerDiagnostics.optimized.laborCostCents);
+    expect(costFirst.optimizerDiagnostics).toMatchObject({
+      algorithmVersion: "portfolio-pareto-beam-v2",
+      strategy: "SHARED_MULTI_OBJECTIVE_PARETO_BEAM_SEARCH",
+      beamWidth: 8,
+      packageVariantWidth: 4,
+      branchWidth: 4,
+      placementStateLimit: 3_000,
+    });
+    expect(costFirst.optimizerDiagnostics.evaluatedPlans).toBeGreaterThanOrEqual(2);
+    expect(costFirst.optimizerDiagnostics.exploredStates).toBeLessThanOrEqual(4_500);
+    expect(new Set([...plans.values()].map(
+      (plan) => plan.optimizerDiagnostics.exploredStates,
+    )).size).toBe(1);
+  });
+
+  it("keeps later cheap capacity visible across availability gaps", () => {
+    const employees = [
+      employee(1, "Expensive before deadline", 6_500, ["MONDAY", "TUESDAY"]),
+      employee(2, "Cheap after deadline", 3_800, ["THURSDAY", "FRIDAY"]),
+    ];
+    const portfolioProject = project(480, new Date("2026-08-11T00:00:00.000Z"));
+    const plans = allocatePortfolioScenarioPlans(
+      input("BALANCED", employees, portfolioProject),
+      ["BALANCED", "COST_FIRST", "DEADLINE_FIRST", "RESILIENCE_FIRST"],
+    );
+    const costFirst = plans.get("COST_FIRST")!;
+    const deadlineFirst = plans.get("DEADLINE_FIRST")!;
+
+    expect(costFirst.assignments[0]?.employeeId).toBe(2);
+    expect(costFirst.optimizerDiagnostics.optimized.laborCostCents).toBe(30_400);
+    expect(costFirst.optimizerDiagnostics.objectiveVector.softDeadlineExposureMinutes)
+      .toBe(480);
+    expect(deadlineFirst.assignments[0]?.employeeId).toBe(1);
+    expect(deadlineFirst.optimizerDiagnostics.optimized.laborCostCents).toBe(52_000);
+    expect(deadlineFirst.optimizerDiagnostics.objectiveVector.softDeadlineExposureMinutes)
+      .toBe(0);
   });
 });

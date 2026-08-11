@@ -246,6 +246,11 @@ export interface PortfolioOptimizerDiagnostics {
   beamWidth: number;
   packageVariantWidth: number;
   branchWidth: number;
+  orderExploredStates: number;
+  placementExploredStates: number;
+  orderPrunedStates: number;
+  placementPrunedStates: number;
+  placementStateLimit: number;
   exploredStates: number;
   prunedStates: number;
   dominancePrunedStates: number;
@@ -271,6 +276,44 @@ export interface PortfolioOptimizerDiagnostics {
   optimized: PortfolioPlanCostBaseline;
   improvement: PortfolioPlanCostBaseline;
   improvementVsV1: PortfolioPlanCostBaseline;
+}
+
+export interface PortfolioPlanningScenario {
+  planningProfile: PlanningProfile;
+  previewId: string;
+  inputVersion: string;
+  proposedWorkMinutes: number;
+  unplannedWorkPackages: number;
+  unplannedMinutes: number;
+  overtimeMinutes: number;
+  workPackageCostCents: number;
+  plannedCostCents: number;
+  hardDeadlineExposureMinutes: number;
+  softDeadlineExposureMinutes: number;
+  singlePointExposureMinutes: number;
+  maxRecoveryShortfallMinutes: number;
+  skillConcentrationBasisPoints: number;
+  optimizerRuntimeMs: number;
+  orderExploredStates: number;
+  placementExploredStates: number;
+  orderPrunedStates: number;
+  placementPrunedStates: number;
+  placementStateLimit: number;
+  exploredStates: number;
+  prunedStates: number;
+  dominancePrunedStates: number;
+  candidateCount: number;
+  searchLimitReached: boolean;
+}
+
+export interface PortfolioScenarioComparison {
+  comparisonId: string;
+  horizonStart: string;
+  horizonWeeks: number;
+  replaceGenerated: boolean;
+  comparisonMode: "SHARED_PARETO_FRONTIER";
+  runtimeMs: number;
+  scenarios: PortfolioPlanningScenario[];
 }
 
 export interface PortfolioProjectCostWeek {

@@ -3,7 +3,7 @@ import { DateTime } from "luxon";
 import { PrismaClient, type Prisma } from "../generated/prisma/client.js";
 import { DayOfWeek } from "../generated/prisma/enums.js";
 
-const CONFIRMATION = "OPTIMIZER_DEMO_V1";
+const CONFIRMATION = "OPTIMIZER_DEMO_V2";
 const DEMO_PREFIX = "[OPT-DEMO]";
 const TIME_ZONE = "Europe/Vienna";
 
@@ -37,6 +37,8 @@ const skillNames = {
   frontend: `${DEMO_PREFIX} Frontend`,
   backend: `${DEMO_PREFIX} Backend`,
   devops: `${DEMO_PREFIX} DevOps`,
+  deadline: `${DEMO_PREFIX} Deadline Delivery`,
+  continuity: `${DEMO_PREFIX} Service Continuity`,
 } as const;
 
 const employeeDefinitions = [
@@ -49,6 +51,7 @@ const employeeDefinitions = [
     hourlyCostCents: 5_000,
     overtimeRateBasisPoints: 15_000,
     skills: { [skillNames.flexible]: 5, [skillNames.scarce]: 5 },
+    availability: weekDays,
   },
   {
     name: "Leon Fischer",
@@ -59,6 +62,7 @@ const employeeDefinitions = [
     hourlyCostCents: 5_000,
     overtimeRateBasisPoints: 15_000,
     skills: { [skillNames.flexible]: 5 },
+    availability: weekDays,
   },
   {
     name: "Eva Nowak",
@@ -68,7 +72,8 @@ const employeeDefinitions = [
     maxWeeklyMinutes: 2_400,
     hourlyCostCents: 6_000,
     overtimeRateBasisPoints: 15_000,
-    skills: { [skillNames.frontend]: 5, [skillNames.backend]: 5 },
+    skills: { [skillNames.frontend]: 5, [skillNames.backend]: 5, [skillNames.continuity]: 5 },
+    availability: weekDays,
   },
   {
     name: "Theo Berger",
@@ -78,7 +83,8 @@ const employeeDefinitions = [
     maxWeeklyMinutes: 2_400,
     hourlyCostCents: 4_000,
     overtimeRateBasisPoints: 15_000,
-    skills: { [skillNames.frontend]: 5 },
+    skills: { [skillNames.frontend]: 5, [skillNames.continuity]: 5 },
+    availability: weekDays,
   },
   {
     name: "Nina Horvat",
@@ -88,7 +94,8 @@ const employeeDefinitions = [
     maxWeeklyMinutes: 2_400,
     hourlyCostCents: 4_500,
     overtimeRateBasisPoints: 15_000,
-    skills: { [skillNames.backend]: 5 },
+    skills: { [skillNames.backend]: 5, [skillNames.continuity]: 5 },
+    availability: weekDays,
   },
   {
     name: "Omar Haddad",
@@ -99,6 +106,7 @@ const employeeDefinitions = [
     hourlyCostCents: 5_500,
     overtimeRateBasisPoints: 15_000,
     skills: { [skillNames.backend]: 5, [skillNames.devops]: 5 },
+    availability: weekDays,
   },
   {
     name: "Pia Schneider",
@@ -109,6 +117,29 @@ const employeeDefinitions = [
     hourlyCostCents: 4_200,
     overtimeRateBasisPoints: 15_000,
     skills: { [skillNames.devops]: 5 },
+    availability: weekDays,
+  },
+  {
+    name: "Sara Lindner",
+    email: "optimizer.sara@crewplan.demo",
+    role: "Senior Delivery Lead",
+    preferredWeeklyMinutes: 960,
+    maxWeeklyMinutes: 960,
+    hourlyCostCents: 6_500,
+    overtimeRateBasisPoints: 15_000,
+    skills: { [skillNames.deadline]: 5 },
+    availability: [DayOfWeek.MONDAY, DayOfWeek.TUESDAY],
+  },
+  {
+    name: "Ben Rossi",
+    email: "optimizer.ben@crewplan.demo",
+    role: "Delivery Analyst",
+    preferredWeeklyMinutes: 960,
+    maxWeeklyMinutes: 960,
+    hourlyCostCents: 3_800,
+    overtimeRateBasisPoints: 15_000,
+    skills: { [skillNames.deadline]: 5 },
+    availability: [DayOfWeek.THURSDAY, DayOfWeek.FRIDAY],
   },
 ] as const;
 
@@ -141,6 +172,19 @@ interface DemoEntityUsage {
 }
 
 const projectDefinitions: ProjectDefinition[] = [
+  {
+    name: `${DEMO_PREFIX} Deadline Trade-off`,
+    color: "#EA580C",
+    priority: "HIGH",
+    deadlineType: "SOFT",
+    optimizationStrategy: "BALANCED",
+    targetWeek: 0,
+    totalBudgetCents: 60_000,
+    weeklyBudgetCents: 35_000,
+    workPackages: [
+      { name: "Executive readiness pack", skill: skillNames.deadline, minutes: 480, sortOrder: 0, targetWeek: 0, targetDay: 1 },
+    ],
+  },
   {
     name: `${DEMO_PREFIX} Critical Release Train`,
     color: "#DC2626",
@@ -213,6 +257,19 @@ const projectDefinitions: ProjectDefinition[] = [
       { name: "Portfolio hardening", skill: skillNames.frontend, minutes: 1_440, sortOrder: 3, earliestWeek: 3, dependsOn: ["Insight experience"] },
     ],
   },
+  {
+    name: `${DEMO_PREFIX} Service Continuity`,
+    color: "#0891B2",
+    priority: "NORMAL",
+    deadlineType: "SOFT",
+    optimizationStrategy: "BALANCED",
+    targetWeek: 3,
+    totalBudgetCents: 110_000,
+    weeklyBudgetCents: 70_000,
+    workPackages: [
+      { name: "Continuity safeguards", skill: skillNames.continuity, minutes: 1_440, sortOrder: 0, targetWeek: 2 },
+    ],
+  },
 ];
 
 async function seedOptimizerDemo() {
@@ -278,7 +335,7 @@ async function seedOptimizerDemo() {
         })),
       });
       await transaction.employeeAvailability.createMany({
-        data: weekDays.map((dayOfWeek) => ({ employeeId: employee.id, dayOfWeek, startMinute: 540, endMinute: 1_020 })),
+        data: definition.availability.map((dayOfWeek) => ({ employeeId: employee.id, dayOfWeek, startMinute: 540, endMinute: 1_020 })),
       });
     }
 
@@ -364,6 +421,10 @@ async function seedOptimizerDemo() {
       projects: projectDefinitions.length,
       workPackages: projectDefinitions.reduce((total, project) => total + project.workPackages.length, 0),
       dependencies: projectDefinitions.reduce((total, project) => total + project.workPackages.reduce((sum, item) => sum + (item.dependsOn?.length ?? 0), 0), 0),
+      decisionStories: [
+        "deadline: €520 before Tuesday vs €304 after Tuesday",
+        "resilience: concentrated cheap delivery vs diversified delivery",
+      ],
     };
   }, { timeout: 30_000 });
 
