@@ -197,4 +197,27 @@ describe("portfolio planning profiles", () => {
       (plan) => plan.optimizerDiagnostics.exploredStates,
     )).size).toBe(1);
   });
+
+  it("keeps later cheap capacity visible across availability gaps", () => {
+    const employees = [
+      employee(1, "Expensive before deadline", 6_500, ["MONDAY", "TUESDAY"]),
+      employee(2, "Cheap after deadline", 3_800, ["THURSDAY", "FRIDAY"]),
+    ];
+    const portfolioProject = project(480, new Date("2026-08-11T00:00:00.000Z"));
+    const plans = allocatePortfolioScenarioPlans(
+      input("BALANCED", employees, portfolioProject),
+      ["BALANCED", "COST_FIRST", "DEADLINE_FIRST", "RESILIENCE_FIRST"],
+    );
+    const costFirst = plans.get("COST_FIRST")!;
+    const deadlineFirst = plans.get("DEADLINE_FIRST")!;
+
+    expect(costFirst.assignments[0]?.employeeId).toBe(2);
+    expect(costFirst.optimizerDiagnostics.optimized.laborCostCents).toBe(30_400);
+    expect(costFirst.optimizerDiagnostics.objectiveVector.softDeadlineExposureMinutes)
+      .toBe(480);
+    expect(deadlineFirst.assignments[0]?.employeeId).toBe(1);
+    expect(deadlineFirst.optimizerDiagnostics.optimized.laborCostCents).toBe(52_000);
+    expect(deadlineFirst.optimizerDiagnostics.objectiveVector.softDeadlineExposureMinutes)
+      .toBe(0);
+  });
 });

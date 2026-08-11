@@ -213,7 +213,7 @@ function placementCandidates(
     employeeScarcity: number;
     usedMinutes: number;
   }>;
-  let firstCandidateDay: DateTime | null = null;
+  let candidateDayCount = 0;
   for (
     let day = earliest.startOf("day");
     day < input.end;
@@ -279,13 +279,10 @@ function placementCandidates(
       })
       .sort((first, second) => first.employee.id - second.employee.id);
     if (candidates.length > 0) {
-      firstCandidateDay ??= day;
+      candidateDayCount += 1;
       collected.push(...candidates);
     }
-    if (
-      firstCandidateDay !== null
-      && day.diff(firstCandidateDay, "days").days >= lookaheadDays - 1
-    ) break;
+    if (candidateDayCount >= lookaheadDays) break;
   }
   const compareForProfile = (
     first: typeof collected[number],
