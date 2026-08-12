@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { DateTime } from "luxon";
 import type { Prisma } from "../generated/prisma/client.js";
-import { buildSchedulePreview } from "../scheduling/schedulePreview.js";
+import {
+  buildSchedulePreview,
+  buildSchedulePreviews,
+} from "../scheduling/schedulePreview.js";
 import { allocationCostBreakdown } from "../scheduling/scoring.js";
 import { SCHEDULE_TIME_ZONE } from "../scheduling/timeAdapter.js";
 import {
@@ -30,6 +33,7 @@ export interface PortfolioPlanOptions {
   planningProfile?: PlanningProfile;
   optimizerSearchMode?: OptimizerSearchMode;
   optimizerRunner?: typeof allocatePortfolioWork;
+  fixedPreviewRunner?: typeof buildSchedulePreview;
 }
 
 const PLANNING_PROFILES: PlanningProfile[] = [
@@ -57,15 +61,124 @@ function memoizedDelegate(delegate: ReadDelegate) {
   };
 }
 
-function snapshotDatabase(database: PlanningDatabase): PlanningDatabase {
+function memoizedEmployeeDelegate(delegate: ReadDelegate) {
+  const memoized = memoizedDelegate(delegate);
   return {
-    employee: memoizedDelegate(database.employee as unknown as ReadDelegate),
+    async findMany(args: unknown) {
+      if (!args || typeof args !== "object") return memoized.findMany(args);
+      const request = args as {
+        where?: { id?: { notIn?: unknown } } & Record<string, unknown>;
+      } & Record<string, unknown>;
+      const idFilter = request.where?.id;
+      const excludedIds = idFilter?.notIn;
+      if (
+        !Array.isArray(excludedIds)
+        || excludedIds.some((id) => typeof id !== "number")
+        || Object.keys(idFilter ?? {}).some((key) => key !== "notIn")
+      ) {
+        return memoized.findMany(args);
+      }
+
+      const where = { ...request.where };
+      delete where.id;
+      const employees = await memoized.findMany({ ...request, where });
+      if (!Array.isArray(employees)) return employees;
+      const excluded = new Set<number>(excludedIds);
+      return employees.filter((employee) =>
+        employee
+        && typeof employee === "object"
+        && "id" in employee
+        && typeof employee.id === "number"
+        && !excluded.has(employee.id),
+      );
+    },
+  };
+}
+
+export function createPlanningSnapshotDatabase(
+  database: PlanningDatabase,
+): PlanningDatabase {
+  return {
+    employee: memoizedEmployeeDelegate(database.employee as unknown as ReadDelegate),
     project: memoizedDelegate(database.project as unknown as ReadDelegate),
     projectRequirement: memoizedDelegate(
       database.projectRequirement as unknown as ReadDelegate,
     ),
     shift: memoizedDelegate(database.shift as unknown as ReadDelegate),
   } as PlanningDatabase;
+}
+
+function memoizedSchedulePreviewRunner(
+  delegate: typeof buildSchedulePreview = buildSchedulePreview,
+): typeof buildSchedulePreview {
+  const previews = new Map<string, ReturnType<typeof buildSchedulePreview>>();
+  return (database, weekStart, replaceExisting, excludedEmployeeIds = []) => {
+    const key = JSON.stringify({
+      weekStart,
+      replaceExisting,
+      excludedEmployeeIds: [...excludedEmployeeIds].sort((first, second) => first - second),
+    });
+    const existing = previews.get(key);
+    if (existing) return existing;
+    const result = delegate(
+      database,
+      weekStart,
+      replaceExisting,
+      excludedEmployeeIds,
+    );
+    previews.set(key, result);
+    return result;
+  };
+}
+
+function batchedSchedulePreviewRunner(
+  database: PlanningDatabase,
+  options: Pick<
+    PortfolioPlanOptions,
+    "horizonStart" | "horizonWeeks" | "replaceGenerated"
+  >,
+): typeof buildSchedulePreview {
+  if (
+    !Number.isInteger(options.horizonWeeks)
+    || options.horizonWeeks < 1
+    || options.horizonWeeks > MAX_HORIZON_WEEKS
+  ) {
+    throw new Error("HORIZON_WEEKS_INVALID");
+  }
+  const start = monday(options.horizonStart);
+  const weekStarts = Array.from(
+    { length: options.horizonWeeks },
+    (_, index) => start.plus({ weeks: index }).toISODate()!,
+  );
+  const expectedWeeks = new Set(weekStarts);
+  const previews = buildSchedulePreviews(
+    database,
+    weekStarts,
+    options.replaceGenerated,
+  ).then((items) => new Map(items.map((item) => [item.weekStart, item])));
+
+  return async (
+    fallbackDatabase,
+    weekStart,
+    replaceExisting,
+    excludedEmployeeIds = [],
+  ) => {
+    if (
+      !expectedWeeks.has(weekStart)
+      || replaceExisting !== options.replaceGenerated
+      || excludedEmployeeIds.length > 0
+    ) {
+      return buildSchedulePreview(
+        fallbackDatabase,
+        weekStart,
+        replaceExisting,
+        excludedEmployeeIds,
+      );
+    }
+    const preview = (await previews).get(weekStart);
+    if (!preview) throw new Error("SCHEDULE_PREVIEW_NOT_FOUND");
+    return preview;
+  };
 }
 
 interface CostedInterval extends Interval {
@@ -126,14 +239,23 @@ export async function buildPortfolioPlanPreview(
   const horizonStart = start.toUTC().toJSDate();
   const horizonEndExclusive = end.toUTC().toJSDate();
 
-  const fixedPreviews = await Promise.all(
-    Array.from({ length: options.horizonWeeks }, (_, index) => buildSchedulePreview(
+  const weekStarts = Array.from(
+    { length: options.horizonWeeks },
+    (_, index) => start.plus({ weeks: index }).toISODate()!,
+  );
+  const fixedPreviews = options.fixedPreviewRunner
+    ? await Promise.all(weekStarts.map((weekStart) => options.fixedPreviewRunner!(
       database,
-      start.plus({ weeks: index }).toISODate()!,
+      weekStart,
       options.replaceGenerated,
       options.excludedEmployeeIds ?? [],
-    )),
-  );
+    )))
+    : await buildSchedulePreviews(
+      database,
+      weekStarts,
+      options.replaceGenerated,
+      options.excludedEmployeeIds ?? [],
+    );
 
   const [employees, projects, horizonShifts, futureWorkPackageShifts] = await Promise.all([
     database.employee.findMany({
@@ -525,24 +647,35 @@ export async function buildPortfolioScenarioComparison(
   options: Omit<PortfolioPlanOptions, "planningProfile" | "excludedEmployeeIds">,
 ) {
   const startedAt = Date.now();
-  const cachedDatabase = snapshotDatabase(database);
-  const scenarios = [];
+  const cachedDatabase = createPlanningSnapshotDatabase(database);
+  const fixedPreviewRunner = options.fixedPreviewRunner
+    ? memoizedSchedulePreviewRunner(options.fixedPreviewRunner)
+    : batchedSchedulePreviewRunner(cachedDatabase, options);
   let sharedPlans: ReturnType<typeof allocatePortfolioScenarioPlans> | null = null;
+  let sharedOptimizerStartedAt: number | null = null;
+  let sharedOptimizerFinishedAt: number | null = null;
   const sharedRunner: typeof allocatePortfolioWork = (input) => {
-    sharedPlans ??= allocatePortfolioScenarioPlans(input, PLANNING_PROFILES);
+    if (sharedPlans === null) {
+      sharedOptimizerStartedAt = Date.now();
+      sharedPlans = allocatePortfolioScenarioPlans(input, PLANNING_PROFILES);
+      sharedOptimizerFinishedAt = Date.now();
+    }
     return sharedPlans.get(input.planningProfile ?? "BALANCED")!;
   };
 
-  for (const planningProfile of PLANNING_PROFILES) {
+  const scenarios = await Promise.all(PLANNING_PROFILES.map(async (planningProfile) => {
     const preview = await buildPortfolioPlanPreview(cachedDatabase, {
       ...options,
       planningProfile,
       optimizerSearchMode: "COMPARISON",
       optimizerRunner: sharedRunner,
+      fixedPreviewRunner,
     });
     const objective = preview.optimizerDiagnostics.objectiveVector;
-    scenarios.push({
+    return {
       planningProfile,
+      algorithmVersion: preview.optimizerDiagnostics.algorithmVersion,
+      strategy: preview.optimizerDiagnostics.strategy,
       previewId: preview.previewId,
       inputVersion: preview.inputVersion,
       proposedWorkMinutes: preview.metrics.proposedWorkMinutes,
@@ -567,9 +700,10 @@ export async function buildPortfolioScenarioComparison(
       dominancePrunedStates: preview.optimizerDiagnostics.dominancePrunedStates,
       candidateCount: preview.optimizerDiagnostics.evaluatedPlans,
       searchLimitReached: preview.optimizerDiagnostics.searchLimitReached,
-    });
-  }
+    };
+  }));
 
+  const finishedAt = Date.now();
   return {
     comparisonId: digest({
       horizonStart: options.horizonStart,
@@ -584,7 +718,13 @@ export async function buildPortfolioScenarioComparison(
     horizonWeeks: options.horizonWeeks,
     replaceGenerated: options.replaceGenerated,
     comparisonMode: "SHARED_PARETO_FRONTIER" as const,
-    runtimeMs: Date.now() - startedAt,
+    runtimeMs: finishedAt - startedAt,
+    runtimeBreakdown: {
+      preOptimizerMs: (sharedOptimizerStartedAt ?? finishedAt) - startedAt,
+      optimizerMs: (sharedOptimizerFinishedAt ?? finishedAt)
+        - (sharedOptimizerStartedAt ?? finishedAt),
+      postOptimizerMs: finishedAt - (sharedOptimizerFinishedAt ?? finishedAt),
+    },
     scenarios,
   };
 }

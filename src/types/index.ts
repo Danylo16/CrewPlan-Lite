@@ -353,6 +353,10 @@ export interface PortfolioResilienceScenario {
   criticalGapsAtRisk: number;
   additionalCostCents: number | null;
   recoverable: boolean;
+  reassignedAllocations: number;
+  rescheduledAllocations: number;
+  displacementMinutes: number;
+  ejectedAllocations: number;
   runtimeMs: number;
 }
 

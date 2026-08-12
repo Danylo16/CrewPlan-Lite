@@ -90,6 +90,17 @@ export interface PortfolioOptimizerInput {
   comparisonProfiles?: PlanningProfile[];
 }
 
+export interface ObjectiveScoringContext {
+  projectById: Map<number, OptimizerProject>;
+  workPackageById: Map<number, {
+    project: OptimizerProject;
+    workPackage: OptimizerWorkPackage;
+  }>;
+  qualifiedEmployeesByRequirement: Map<string, OptimizerEmployee[]>;
+  horizonWeeks: number;
+  occupiedByEmployee: Map<number, number>;
+}
+
 export interface UnplannedWorkPackage {
   workPackageId: number;
   projectId: number;
@@ -409,39 +420,9 @@ interface OrderState {
   ordered: PackageEntry[];
   pending: PackageEntry[];
   orderedIds: Set<number>;
-}
-
-function qualifiedEmployeeCount(entry: PackageEntry, employees: OptimizerEmployee[]) {
-  return employees.filter((employee) => employee.skills.some(
-    (skill) => skill.skillId === entry.workPackage.requiredSkillId
-      && skill.level >= entry.workPackage.minimumSkillLevel,
-  )).length;
-}
-
-function orderHeuristic(state: OrderState, employees: OptimizerEmployee[]) {
-  return state.ordered.reduce((score, entry, index) => {
-    const positionWeight = state.ordered.length - index;
-    const deadline = entry.workPackage.targetEndDate ?? entry.project.targetEndDate;
-    const deadlineDay = deadline === null
-      ? 1_000_000
-      : Math.floor(deadline.getTime() / 86_400_000);
-    const scarcity = qualifiedEmployeeCount(entry, employees);
-    const itemScore = priorityRank(entry.project.priority) * 1_000_000_000
-      + Math.min(1_000, scarcity) * 1_000_000
-      + Math.min(999_999, deadlineDay);
-    return score + itemScore * positionWeight;
-  }, 0);
-}
-
-function compareOrderStates(
-  first: OrderState,
-  second: OrderState,
-  employees: OptimizerEmployee[],
-) {
-  const firstSignature = first.ordered.map((item) => item.workPackage.id).join(",");
-  const secondSignature = second.ordered.map((item) => item.workPackage.id).join(",");
-  return orderHeuristic(first, employees) - orderHeuristic(second, employees)
-    || (firstSignature < secondSignature ? -1 : firstSignature > secondSignature ? 1 : 0);
+  heuristic: number;
+  orderedItemScoreSum: number;
+  signature: string;
 }
 
 function readyEntries(state: OrderState) {
@@ -521,11 +502,13 @@ export function objectiveVectorFromComponents(
   ];
 }
 
-export function objectiveComponents(
-  result: ReturnType<typeof allocatePortfolioWorkGreedy>,
+function skillRequirementKey(skillId: number, minimumSkillLevel: number) {
+  return `${skillId}:${minimumSkillLevel}`;
+}
+
+export function createObjectiveScoringContext(
   input: PortfolioOptimizerInput,
-  includeResilienceProxy = true,
-) {
+): ObjectiveScoringContext {
   const projectById = new Map(input.projects.map((project) => [project.id, project]));
   const workPackageById = new Map(
     input.projects.flatMap((project) => project.workPackages.map((workPackage) => [
@@ -533,6 +516,46 @@ export function objectiveComponents(
       { project, workPackage },
     ] as const)),
   );
+  const qualifiedEmployeesByRequirement = new Map<string, OptimizerEmployee[]>();
+  for (const { workPackage } of workPackageById.values()) {
+    const key = skillRequirementKey(
+      workPackage.requiredSkillId,
+      workPackage.minimumSkillLevel,
+    );
+    if (qualifiedEmployeesByRequirement.has(key)) continue;
+    qualifiedEmployeesByRequirement.set(
+      key,
+      input.employees.filter((employee) => employee.skills.some(
+        (skill) => skill.skillId === workPackage.requiredSkillId
+          && skill.level >= workPackage.minimumSkillLevel,
+      )),
+    );
+  }
+  const occupiedByEmployee = new Map<number, number>();
+  for (const interval of input.occupiedIntervals) {
+    occupiedByEmployee.set(
+      interval.employeeId,
+      (occupiedByEmployee.get(interval.employeeId) ?? 0)
+        + Math.round((interval.endAt.getTime() - interval.startAt.getTime()) / 60_000),
+    );
+  }
+  return {
+    projectById,
+    workPackageById,
+    qualifiedEmployeesByRequirement,
+    horizonWeeks: Math.max(1, Math.ceil(input.end.diff(input.start, "weeks").weeks)),
+    occupiedByEmployee,
+  };
+}
+
+export function objectiveComponents(
+  result: ReturnType<typeof allocatePortfolioWorkGreedy>,
+  input: PortfolioOptimizerInput,
+  includeResilienceProxy = true,
+  scoringContext?: ObjectiveScoringContext,
+) {
+  const context = scoringContext ?? createObjectiveScoringContext(input);
+  const { projectById, workPackageById } = context;
   const unplannedByPriority = [0, 0, 0, 0];
   let hardDeadlineExposureMinutes = 0;
   let softDeadlineExposureMinutes = 0;
@@ -613,15 +636,6 @@ export function objectiveComponents(
     };
   }
 
-  const horizonWeeks = Math.max(1, Math.ceil(input.end.diff(input.start, "weeks").weeks));
-  const occupiedByEmployee = new Map<number, number>();
-  for (const interval of input.occupiedIntervals) {
-    occupiedByEmployee.set(
-      interval.employeeId,
-      (occupiedByEmployee.get(interval.employeeId) ?? 0)
-        + Math.round((interval.endAt.getTime() - interval.startAt.getTime()) / 60_000),
-    );
-  }
   const totalAssignedByEmployee = new Map<number, number>();
   const demandBySkillEmployee = new Map<string, {
     skillId: number;
@@ -639,12 +653,12 @@ export function objectiveComponents(
       assignment.employeeId,
       (totalAssignedByEmployee.get(assignment.employeeId) ?? 0) + minutes,
     );
-    const qualified = input.employees.filter((employee) => employee.skills.some(
-      (skill) => skill.skillId === entry.workPackage.requiredSkillId
-        && skill.level >= entry.workPackage.minimumSkillLevel,
-    ));
+    const skillKey = skillRequirementKey(
+      entry.workPackage.requiredSkillId,
+      entry.workPackage.minimumSkillLevel,
+    );
+    const qualified = context.qualifiedEmployeesByRequirement.get(skillKey) ?? [];
     if (qualified.length <= 1) singlePointExposureMinutes += minutes;
-    const skillKey = `${entry.workPackage.requiredSkillId}:${entry.workPackage.minimumSkillLevel}`;
     const skillDemand = demandBySkillEmployee.get(skillKey) ?? {
       skillId: entry.workPackage.requiredSkillId,
       minimumSkillLevel: entry.workPackage.minimumSkillLevel,
@@ -670,16 +684,17 @@ export function objectiveComponents(
     }, 0);
     weightedConcentration += concentration * skillDemand;
     for (const [removedEmployeeId, removedMinutes] of byEmployee) {
-      const backupCapacity = input.employees.filter((employee) =>
-        employee.id !== removedEmployeeId
-        && employee.skills.some((skill) => skill.skillId === skillId
-          && skill.level >= minimumSkillLevel),
-      ).reduce((total, employee) => {
-        const horizonCapacity = employee.maxWeeklyMinutes * horizonWeeks;
-        const alreadyUsed = (occupiedByEmployee.get(employee.id) ?? 0)
-          + (totalAssignedByEmployee.get(employee.id) ?? 0);
-        return total + Math.max(0, horizonCapacity - alreadyUsed);
-      }, 0);
+      const backupCapacity = (
+        context.qualifiedEmployeesByRequirement.get(
+          skillRequirementKey(skillId, minimumSkillLevel),
+        ) ?? []
+      ).filter((employee) => employee.id !== removedEmployeeId)
+        .reduce((total, employee) => {
+          const horizonCapacity = employee.maxWeeklyMinutes * context.horizonWeeks;
+          const alreadyUsed = (context.occupiedByEmployee.get(employee.id) ?? 0)
+            + (totalAssignedByEmployee.get(employee.id) ?? 0);
+          return total + Math.max(0, horizonCapacity - alreadyUsed);
+        }, 0);
       maxRecoveryShortfallMinutes = Math.max(
         maxRecoveryShortfallMinutes,
         Math.max(0, removedMinutes - backupCapacity),
@@ -737,10 +752,29 @@ export function searchPackageOrders(input: PortfolioOptimizerInput) {
     ? COMPARISON_MAX_EXPLORED_STATES
     : MAX_EXPLORED_STATES;
   const defaultOrder = orderedWorkPackages(input.projects);
+  const itemScoreByPackage = new Map(defaultOrder.map((entry) => {
+    const deadline = entry.workPackage.targetEndDate ?? entry.project.targetEndDate;
+    const deadlineDay = deadline === null
+      ? 1_000_000
+      : Math.floor(deadline.getTime() / 86_400_000);
+    const scarcity = input.employees.filter((employee) => employee.skills.some(
+      (skill) => skill.skillId === entry.workPackage.requiredSkillId
+        && skill.level >= entry.workPackage.minimumSkillLevel,
+    )).length;
+    return [
+      entry.workPackage.id,
+      priorityRank(entry.project.priority) * 1_000_000_000
+        + Math.min(1_000, scarcity) * 1_000_000
+        + Math.min(999_999, deadlineDay),
+    ] as const;
+  }));
   let beam: OrderState[] = [{
     ordered: [],
     pending: [...defaultOrder],
     orderedIds: new Set<number>(),
+    heuristic: 0,
+    orderedItemScoreSum: 0,
+    signature: "",
   }];
   const completedOrders: PackageEntry[][] = [];
   let exploredStates = 0;
@@ -756,12 +790,20 @@ export function searchPackageOrders(input: PortfolioOptimizerInput) {
           break;
         }
         exploredStates += 1;
+        const itemScore = itemScoreByPackage.get(next.workPackage.id) ?? 0;
         const nextState: OrderState = {
           ordered: [...state.ordered, next],
           pending: state.pending.filter(
             (item) => item.workPackage.id !== next.workPackage.id,
           ),
           orderedIds: new Set([...state.orderedIds, next.workPackage.id]),
+          // Appending an item raises every existing positional weight by one.
+          // Carry the prior score sum so the comparator stays O(1) per state.
+          heuristic: state.heuristic + state.orderedItemScoreSum + itemScore,
+          orderedItemScoreSum: state.orderedItemScoreSum + itemScore,
+          signature: state.signature.length === 0
+            ? String(next.workPackage.id)
+            : `${state.signature},${next.workPackage.id}`,
         };
         if (nextState.pending.length === 0) completedOrders.push(nextState.ordered);
         else expanded.push(nextState);
@@ -769,7 +811,12 @@ export function searchPackageOrders(input: PortfolioOptimizerInput) {
       if (searchLimitReached) break;
     }
     if (searchLimitReached) break;
-    expanded.sort((first, second) => compareOrderStates(first, second, input.employees));
+    expanded.sort((first, second) =>
+      first.heuristic - second.heuristic
+      || (first.signature < second.signature
+        ? -1
+        : first.signature > second.signature ? 1 : 0),
+    );
     prunedStates += Math.max(0, expanded.length - beamWidth);
     beam = expanded.slice(0, beamWidth);
   }

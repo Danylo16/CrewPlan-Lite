@@ -362,11 +362,11 @@ export function PlannerPage() {
 
       <section className="planner-dashboard-section resilience-dashboard">
         <div className="planner-section-heading">
-          <div><span>Operational risk</span><h3>N−1 schedule resilience</h3><p>Each scenario removes one scheduled employee and rebuilds the same horizon under the same skills, availability, capacity, dependency and deadline constraints.</p></div>
+          <div><span>Operational risk</span><h3>N−1 schedule resilience</h3><p>Each scenario removes one scheduled employee, keeps unaffected allocations fixed and searches for the smallest valid repair under the same skills, availability, capacity and timing constraints.</p></div>
           <button className="secondary-button" disabled={isTestingResilience || preview.resilienceCandidates.length === 0} type="button" onClick={() => void testResilience()}>{isTestingResilience ? `Testing ${preview.resilienceCandidates.length} absences…` : resilience ? "Run stress test again" : "Run N−1 stress test"}</button>
         </div>
 
-        {!resilience && <div className="resilience-intro"><strong>This analysis is intentionally separate from planning.</strong><span>It runs {preview.resilienceCandidates.length} additional deterministic plans and does not modify shifts or progress.</span></div>}
+        {!resilience && <div className="resilience-intro"><strong>This analysis is intentionally separate from planning.</strong><span>It runs {preview.resilienceCandidates.length} deterministic repair scenarios and does not modify shifts or progress.</span></div>}
 
         {resilience && <>
           <div className="resilience-summary">
@@ -377,13 +377,13 @@ export function PlannerPage() {
             <div><span>Required reassignments</span><strong>{resilience.maxRequiredReassignments}</strong><small>worst single absence</small></div>
           </div>
 
-          <div className={`resilience-verdict ${resilience.employeesWithNoFullReplacement.length > 0 ? "resilience-verdict-risk" : "resilience-verdict-safe"}`}><div><strong>{resilience.employeesWithNoFullReplacement.length === 0 ? "Every tested absence is fully recoverable." : `Portfolio is fragile: only ${resilience.recoverableAbsences}/${resilience.testedAbsences} absences fully recover.`}</strong>{resilience.employeesWithNoFullReplacement.length > 0 && <small>No full replacement: {resilience.employeesWithNoFullReplacement.join(", ")}</small>}</div><span>{resilience.algorithmVersion} · {resilience.testedAbsences} replans · {(resilience.runtimeMs / 1000).toFixed(1)}s</span></div>
+          <div className={`resilience-verdict ${resilience.employeesWithNoFullReplacement.length > 0 ? "resilience-verdict-risk" : "resilience-verdict-safe"}`}><div><strong>{resilience.employeesWithNoFullReplacement.length === 0 ? "Every tested absence is fully recoverable." : `Portfolio is fragile: only ${resilience.recoverableAbsences}/${resilience.testedAbsences} absences fully recover.`}</strong>{resilience.employeesWithNoFullReplacement.length > 0 && <small>No full replacement: {resilience.employeesWithNoFullReplacement.join(", ")}</small>}</div><span>{resilience.algorithmVersion} · {resilience.testedAbsences} repairs · {(resilience.runtimeMs / 1000).toFixed(1)}s</span></div>
 
           <div className="resilience-scenarios">
             <div className="resilience-scenario-header"><span>Removed employee</span><span>Affected plan</span><span>Coverage retained</span><span>Unrecovered</span><span>Cost change</span><span>Result</span></div>
             {resilience.scenarios.map((scenario) => <div key={scenario.employeeId}>
               <strong>{scenario.employeeName}</strong>
-              <span>{scenario.affectedAllocations} allocations · {hours(scenario.affectedMinutes)}</span>
+              <span>{scenario.affectedAllocations} affected · {scenario.reassignedAllocations} reassigned{scenario.ejectedAllocations > 0 ? ` · ${scenario.ejectedAllocations} chained` : ""}{scenario.rescheduledAllocations > 0 ? ` · ${scenario.rescheduledAllocations} moved` : ""} · {hours(scenario.affectedMinutes)}</span>
               <span>{scenario.coveragePercent}%</span>
               <span>{hours(scenario.lostMinutes)}{scenario.criticalGapsAtRisk > 0 ? ` · ${scenario.criticalGapsAtRisk} critical gaps` : ""}</span>
               <span>{scenario.additionalCostCents === null ? "Not comparable" : scenario.additionalCostCents === 0 ? "—" : `${scenario.additionalCostCents > 0 ? "+" : "−"}${money(Math.abs(scenario.additionalCostCents))}`}</span>
