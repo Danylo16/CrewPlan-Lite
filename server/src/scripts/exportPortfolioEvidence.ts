@@ -30,6 +30,11 @@ interface Scenario {
 interface Comparison {
   comparisonId: string;
   runtimeMs: number;
+  runtimeBreakdown: {
+    preOptimizerMs: number;
+    optimizerMs: number;
+    postOptimizerMs: number;
+  };
   scenarios: Scenario[];
 }
 
@@ -230,6 +235,12 @@ function markdown(report: EvidenceReport) {
 | p95 | ${report.compare.httpTiming.p95Ms} ms | ${report.compare.serverTiming.p95Ms} ms | ${report.compare.optimizerTiming.p95Ms} ms |
 | max | ${report.compare.httpTiming.maxMs} ms | ${report.compare.serverTiming.maxMs} ms | ${report.compare.optimizerTiming.maxMs} ms |
 
+| Phase | min | p50 | p95 | max |
+| --- | ---: | ---: | ---: | ---: |
+| Pre-optimizer | ${report.compare.preOptimizerTiming.minMs} ms | ${report.compare.preOptimizerTiming.p50Ms} ms | ${report.compare.preOptimizerTiming.p95Ms} ms | ${report.compare.preOptimizerTiming.maxMs} ms |
+| Optimizer | ${report.compare.optimizerTiming.minMs} ms | ${report.compare.optimizerTiming.p50Ms} ms | ${report.compare.optimizerTiming.p95Ms} ms | ${report.compare.optimizerTiming.maxMs} ms |
+| Post-optimizer | ${report.compare.postOptimizerTiming.minMs} ms | ${report.compare.postOptimizerTiming.p50Ms} ms | ${report.compare.postOptimizerTiming.p95Ms} ms | ${report.compare.postOptimizerTiming.maxMs} ms |
+
 Deterministic signature: \`${report.compare.signature}\`
 
 ## Shared Pareto shortlist
@@ -275,13 +286,17 @@ interface EvidenceReport {
       run: number;
       httpMs: number;
       serverMs: number;
+      preOptimizerMs: number;
       optimizerMs: number;
+      postOptimizerMs: number;
       requestId: string | null;
       signature: string;
     }>;
     httpTiming: ReturnType<typeof timing>;
     serverTiming: ReturnType<typeof timing>;
+    preOptimizerTiming: ReturnType<typeof timing>;
     optimizerTiming: ReturnType<typeof timing>;
+    postOptimizerTiming: ReturnType<typeof timing>;
     signature: string;
     referenceScenarios: Scenario[];
   };
@@ -318,7 +333,9 @@ async function main() {
     run: index + 1,
     httpMs: response.httpMs,
     serverMs: Math.round(response.serverMs ?? response.body.runtimeMs),
-    optimizerMs: scenarioByProfile(response.body, "BALANCED").optimizerRuntimeMs,
+    preOptimizerMs: response.body.runtimeBreakdown.preOptimizerMs,
+    optimizerMs: response.body.runtimeBreakdown.optimizerMs,
+    postOptimizerMs: response.body.runtimeBreakdown.postOptimizerMs,
     requestId: response.requestId,
     signature: scenarioSignature(response.body.scenarios),
   }));
@@ -417,7 +434,9 @@ async function main() {
       runs: compareRuns,
       httpTiming: timing(compareRuns.map((item) => item.httpMs)),
       serverTiming: timing(compareRuns.map((item) => item.serverMs)),
+      preOptimizerTiming: timing(compareRuns.map((item) => item.preOptimizerMs)),
       optimizerTiming: timing(compareRuns.map((item) => item.optimizerMs)),
+      postOptimizerTiming: timing(compareRuns.map((item) => item.postOptimizerMs)),
       signature: compareRuns[0]!.signature,
       referenceScenarios: reference.scenarios,
     },

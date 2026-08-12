@@ -50,6 +50,10 @@ Environment variable equivalents are `CREWPLAN_API_URL`,
 Both files contain the API commit, environment, dataset version, horizon,
 request correlation IDs, timing distribution, deterministic signature,
 shortlist outcomes, full-review deltas, N−1 outcomes and every acceptance gate.
+Compare timing is split into pre-optimizer database/input preparation, optimizer,
+and post-optimizer result assembly. The API opens its database connection before
+it starts listening, so the first measured request does not pay connection
+initialization hidden inside the planning endpoint.
 
 ## Merge and article gates
 
