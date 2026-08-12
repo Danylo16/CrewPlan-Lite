@@ -105,7 +105,7 @@ export function createPlanningSnapshotDatabase(
   } as PlanningDatabase;
 }
 
-export function memoizedSchedulePreviewRunner(
+function memoizedSchedulePreviewRunner(
   delegate: typeof buildSchedulePreview = buildSchedulePreview,
 ): typeof buildSchedulePreview {
   const previews = new Map<string, ReturnType<typeof buildSchedulePreview>>();
@@ -589,14 +589,19 @@ export async function buildPortfolioScenarioComparison(
   const startedAt = Date.now();
   const cachedDatabase = createPlanningSnapshotDatabase(database);
   const fixedPreviewRunner = memoizedSchedulePreviewRunner(options.fixedPreviewRunner);
-  const scenarios = [];
   let sharedPlans: ReturnType<typeof allocatePortfolioScenarioPlans> | null = null;
+  let sharedOptimizerStartedAt: number | null = null;
+  let sharedOptimizerFinishedAt: number | null = null;
   const sharedRunner: typeof allocatePortfolioWork = (input) => {
-    sharedPlans ??= allocatePortfolioScenarioPlans(input, PLANNING_PROFILES);
+    if (sharedPlans === null) {
+      sharedOptimizerStartedAt = Date.now();
+      sharedPlans = allocatePortfolioScenarioPlans(input, PLANNING_PROFILES);
+      sharedOptimizerFinishedAt = Date.now();
+    }
     return sharedPlans.get(input.planningProfile ?? "BALANCED")!;
   };
 
-  for (const planningProfile of PLANNING_PROFILES) {
+  const scenarios = await Promise.all(PLANNING_PROFILES.map(async (planningProfile) => {
     const preview = await buildPortfolioPlanPreview(cachedDatabase, {
       ...options,
       planningProfile,
@@ -605,7 +610,7 @@ export async function buildPortfolioScenarioComparison(
       fixedPreviewRunner,
     });
     const objective = preview.optimizerDiagnostics.objectiveVector;
-    scenarios.push({
+    return {
       planningProfile,
       previewId: preview.previewId,
       inputVersion: preview.inputVersion,
@@ -631,9 +636,10 @@ export async function buildPortfolioScenarioComparison(
       dominancePrunedStates: preview.optimizerDiagnostics.dominancePrunedStates,
       candidateCount: preview.optimizerDiagnostics.evaluatedPlans,
       searchLimitReached: preview.optimizerDiagnostics.searchLimitReached,
-    });
-  }
+    };
+  }));
 
+  const finishedAt = Date.now();
   return {
     comparisonId: digest({
       horizonStart: options.horizonStart,
@@ -648,7 +654,13 @@ export async function buildPortfolioScenarioComparison(
     horizonWeeks: options.horizonWeeks,
     replaceGenerated: options.replaceGenerated,
     comparisonMode: "SHARED_PARETO_FRONTIER" as const,
-    runtimeMs: Date.now() - startedAt,
+    runtimeMs: finishedAt - startedAt,
+    runtimeBreakdown: {
+      preOptimizerMs: (sharedOptimizerStartedAt ?? finishedAt) - startedAt,
+      optimizerMs: (sharedOptimizerFinishedAt ?? finishedAt)
+        - (sharedOptimizerStartedAt ?? finishedAt),
+      postOptimizerMs: finishedAt - (sharedOptimizerFinishedAt ?? finishedAt),
+    },
     scenarios,
   };
 }

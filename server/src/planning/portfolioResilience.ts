@@ -18,7 +18,6 @@ const MAX_REPLACEMENT_BRANCHES = 12;
 const REPAIR_SLOT_STEP_MINUTES = 30;
 const MAX_EJECTION_DEPTH = 2;
 const MAX_EJECTION_BRANCHES = 6;
-const MAX_REPAIR_TASK_MINUTES = 240;
 const MAX_INTERVALS_PER_EMPLOYEE_TASK = 32;
 
 export interface PortfolioResilienceOptions extends Omit<PortfolioPlanOptions, "excludedEmployeeIds"> {
@@ -28,8 +27,6 @@ export interface PortfolioResilienceOptions extends Omit<PortfolioPlanOptions, "
 
 interface RepairTask extends Interval {
   id: string;
-  allocationId: string;
-  originalMinutes: number;
   kind: "WORK_PACKAGE" | "FIXED_COVERAGE" | "RETAINED_COMMITMENT";
   requiredSkillId: number | null;
   minimumSkillLevel: number;
@@ -45,10 +42,10 @@ interface RepairState {
   lostMinutes: number;
   lostCriticalKeys: Set<string>;
   replacementCostCents: number;
-  reassignedAllocationIds: Set<string>;
-  rescheduledAllocationIds: Set<string>;
+  replacementCount: number;
+  rescheduledCount: number;
   displacementMinutes: number;
-  ejectedAllocationIds: Set<string>;
+  ejectionCount: number;
   ejectedTaskIds: Set<string>;
   signature: string;
 }
@@ -78,18 +75,17 @@ function localTargetEnd(value: Date | null) {
 
 function cloneState(state: RepairState): RepairState {
   return {
-    // Placement arrays are immutable. addPlacement/removePlacement replace
-    // only the modified employee array, so other beam states can share the
-    // untouched arrays safely.
+    // Arrays are immutable: addPlacement/removePlacement replace only the
+    // modified employee array, so sibling beam states share the rest safely.
     occupiedByEmployee: new Map(state.occupiedByEmployee),
     weeklyMinutes: new Map(state.weeklyMinutes),
     lostMinutes: state.lostMinutes,
     lostCriticalKeys: new Set(state.lostCriticalKeys),
     replacementCostCents: state.replacementCostCents,
-    reassignedAllocationIds: new Set(state.reassignedAllocationIds),
-    rescheduledAllocationIds: new Set(state.rescheduledAllocationIds),
+    replacementCount: state.replacementCount,
+    rescheduledCount: state.rescheduledCount,
     displacementMinutes: state.displacementMinutes,
-    ejectedAllocationIds: new Set(state.ejectedAllocationIds),
+    ejectionCount: state.ejectionCount,
     ejectedTaskIds: new Set(state.ejectedTaskIds),
     signature: state.signature,
   };
@@ -100,7 +96,7 @@ function compareRepairStates(first: RepairState, second: RepairState) {
     || first.lostMinutes - second.lostMinutes
     || first.displacementMinutes - second.displacementMinutes
     || first.replacementCostCents - second.replacementCostCents
-    || first.reassignedAllocationIds.size - second.reassignedAllocationIds.size
+    || first.replacementCount - second.replacementCount
     || first.signature.localeCompare(second.signature);
 }
 
@@ -194,12 +190,12 @@ function addPlacement(
     minutes(interval),
   ).totalCostCents;
   state.replacementCostCents += cost - baselineCreditCents;
-  state.reassignedAllocationIds.add(task.allocationId);
+  state.replacementCount += 1;
   const displacement = Math.round(
     Math.abs(interval.startAt.getTime() - task.startAt.getTime()) / 60_000,
   );
-  if (displacement !== 0) state.rescheduledAllocationIds.add(task.allocationId);
-  state.displacementMinutes += displacement * minutes(task) / task.originalMinutes;
+  state.rescheduledCount += displacement === 0 ? 0 : 1;
+  state.displacementMinutes += displacement;
   state.signature += `${task.id}:${employee.id}:${interval.startAt.toISOString()};`;
 }
 
@@ -262,6 +258,16 @@ function repairCandidateAbsence(
 ) {
   const remainingEmployees = employees.filter((employee) => employee.id !== candidateId);
   const affectedTaskIds = new Set(tasks.map((task) => task.id));
+  const qualifiedEmployeesByTask = new Map<string, OptimizerEmployee[]>();
+  function qualifiedEmployeesFor(task: RepairTask) {
+    const existing = qualifiedEmployeesByTask.get(task.id);
+    if (existing) return existing;
+    const qualified = remainingEmployees.filter((employee) =>
+      employeeQualifiedForTask(employee, task),
+    );
+    qualifiedEmployeesByTask.set(task.id, qualified);
+    return qualified;
+  }
   const intervalCache = new Map<string, Interval[]>();
   function intervalsFor(employee: OptimizerEmployee, task: RepairTask) {
     const key = `${employee.id}:${task.id}`;
@@ -289,78 +295,45 @@ function repairCandidateAbsence(
     chainTaskIds: Set<string>,
   ): RepairState[] {
     const duration = minutes(task);
-    const rankedOptions = remainingEmployees
-      .filter((employee) => employeeQualifiedForTask(employee, task))
-      .flatMap((employee) => intervalsFor(employee, task).map((interval) => {
+    const rawOptions = qualifiedEmployeesFor(task).flatMap((employee) =>
+      intervalsFor(employee, task).map((interval) => {
         const displacement = Math.round(
           Math.abs(interval.startAt.getTime() - task.startAt.getTime()) / 60_000,
         );
-        const employeePlacements = state.occupiedByEmployee.get(employee.id) ?? [];
-        const overlapBlockers = employeePlacements.filter((item) => overlaps(item, interval));
-        const key = `${employee.id}:${weekKey(interval.startAt)}`;
-        const weeklyAfterOverlapRemoval = (state.weeklyMinutes.get(key) ?? 0)
-          - overlapBlockers
-            .filter((item) => weekKey(item.startAt) === weekKey(interval.startAt))
-            .reduce((total, item) => total + minutes(item), 0);
-        const capacityBlockers = weeklyAfterOverlapRemoval + duration <= employee.maxWeeklyMinutes
-          ? []
-          : employeePlacements.filter((item) =>
-            weekKey(item.startAt) === weekKey(interval.startAt)
-              && !overlapBlockers.includes(item)
-              && item.task.movable
-              && !chainTaskIds.has(item.task.id)
-              && !state.ejectedTaskIds.has(item.task.id)
-              && weeklyAfterOverlapRemoval - minutes(item) + duration
-                <= employee.maxWeeklyMinutes,
-          );
-        const blockerChoices: OccupiedPlacement[][] = overlapBlockers.length > 0
-          ? [overlapBlockers]
-          : capacityBlockers.length > 0
-            ? capacityBlockers.map((item) => [item])
-            : [[]];
-        const direct = blockerChoices[0]?.length === 0
-          && employeeCanTakeTask(employee, task, interval, state);
-        const ejectable = depth > 0 && blockerChoices.some((blockers) =>
-          blockers.length === 1
-            && blockers[0]!.task.movable
-            && !chainTaskIds.has(blockers[0]!.task.id)
-            && !state.ejectedTaskIds.has(blockers[0]!.task.id),
-        );
-        return {
-          employee,
-          interval,
-          displacement,
-          blockerChoices,
-          feasibilityRank: direct ? 0 : ejectable ? 1 : 2,
-        };
-      }))
-      .sort((first, second) =>
-        first.feasibilityRank - second.feasibilityRank
-        || first.displacement - second.displacement
+        return { employee, interval, displacement };
+      }),
+    ).sort((first, second) =>
+        first.displacement - second.displacement
         || first.interval.startAt.getTime() - second.interval.startAt.getTime()
         || first.employee.id - second.employee.id,
       )
-      .filter((option) => option.feasibilityRank < 2);
-    const rawOptions = [] as typeof rankedOptions;
-    const selected = new Set<(typeof rankedOptions)[number]>();
-    const representedEmployees = new Set<number>();
-    for (const option of rankedOptions) {
-      if (representedEmployees.has(option.employee.id)) continue;
-      representedEmployees.add(option.employee.id);
-      selected.add(option);
-      rawOptions.push(option);
-      if (rawOptions.length === MAX_REPLACEMENT_BRANCHES) break;
-    }
-    if (rawOptions.length < MAX_REPLACEMENT_BRANCHES) {
-      for (const option of rankedOptions) {
-        if (selected.has(option)) continue;
-        rawOptions.push(option);
-        if (rawOptions.length === MAX_REPLACEMENT_BRANCHES) break;
-      }
-    }
+      .slice(0, MAX_REPLACEMENT_BRANCHES);
     const results: RepairState[] = [];
 
-    for (const { employee, interval, blockerChoices } of rawOptions) {
+    for (const { employee, interval } of rawOptions) {
+      const employeePlacements = state.occupiedByEmployee.get(employee.id) ?? [];
+      const overlapBlockers = employeePlacements.filter((item) => overlaps(item, interval));
+      const key = `${employee.id}:${weekKey(interval.startAt)}`;
+      const weeklyAfterOverlapRemoval = (state.weeklyMinutes.get(key) ?? 0)
+        - overlapBlockers
+          .filter((item) => weekKey(item.startAt) === weekKey(interval.startAt))
+          .reduce((total, item) => total + minutes(item), 0);
+      const capacityBlockers = weeklyAfterOverlapRemoval + duration <= employee.maxWeeklyMinutes
+        ? []
+        : employeePlacements.filter((item) =>
+          weekKey(item.startAt) === weekKey(interval.startAt)
+            && !overlapBlockers.includes(item)
+            && item.task.movable
+            && !chainTaskIds.has(item.task.id)
+            && !state.ejectedTaskIds.has(item.task.id)
+            && weeklyAfterOverlapRemoval - minutes(item) + duration <= employee.maxWeeklyMinutes,
+        );
+      const blockerChoices: OccupiedPlacement[][] = overlapBlockers.length > 0
+        ? [overlapBlockers]
+        : capacityBlockers.length > 0
+          ? capacityBlockers.map((item) => [item])
+          : [[]];
+
       for (const blockers of blockerChoices.slice(0, MAX_EJECTION_BRANCHES)) {
         if (blockers.length === 0) {
           if (!employeeCanTakeTask(employee, task, interval, state)) continue;
@@ -392,7 +365,7 @@ function repairCandidateAbsence(
           );
         if (!clonedBlocker) continue;
         removePlacement(withoutBlocker, clonedBlocker);
-        withoutBlocker.ejectedAllocationIds.add(blocker.task.allocationId);
+        withoutBlocker.ejectionCount += 1;
         withoutBlocker.ejectedTaskIds.add(blocker.task.id);
         if (!employeeCanTakeTask(employee, task, interval, withoutBlocker)) continue;
         addPlacement(
@@ -423,21 +396,19 @@ function repairCandidateAbsence(
     lostMinutes: 0,
     lostCriticalKeys: new Set(),
     replacementCostCents: 0,
-    reassignedAllocationIds: new Set(),
-    rescheduledAllocationIds: new Set(),
+    replacementCount: 0,
+    rescheduledCount: 0,
     displacementMinutes: 0,
-    ejectedAllocationIds: new Set(),
+    ejectionCount: 0,
     ejectedTaskIds: new Set(),
     signature: "",
   }];
   const orderedTasks = [...tasks].sort((first, second) => {
-    const firstCandidates = remainingEmployees.filter((employee) =>
-      employeeQualifiedForTask(employee, first)
-        && intervalsFor(employee, first).length > 0,
+    const firstCandidates = qualifiedEmployeesFor(first).filter((employee) =>
+      intervalsFor(employee, first).length > 0,
     ).length;
-    const secondCandidates = remainingEmployees.filter((employee) =>
-      employeeQualifiedForTask(employee, second)
-        && intervalsFor(employee, second).length > 0,
+    const secondCandidates = qualifiedEmployeesFor(second).filter((employee) =>
+      intervalsFor(employee, second).length > 0,
     ).length;
     return Number(second.criticalKey !== null) - Number(first.criticalKey !== null)
       || firstCandidates - secondCandidates
@@ -490,6 +461,7 @@ export async function buildPortfolioResilienceReport(
       : {}),
   };
   const baseline = await buildPortfolioPlanPreview(snapshotDatabase, planOptions);
+  const baselineFinishedAt = Date.now();
   if (baseline.previewId !== options.previewId || baseline.inputVersion !== options.inputVersion) {
     throw new Error("PORTFOLIO_PREVIEW_STALE");
   }
@@ -597,54 +569,25 @@ export async function buildPortfolioResilienceReport(
       (earliest, boundary) => boundary < earliest ? boundary : earliest,
       horizonEndExclusive,
     );
-    const assignmentStart = new Date(assignment.startAt);
-    const assignmentMinutes = minutes({ startAt: assignmentStart, endAt: originalEnd });
-    const allocationId = `work:${assignment.workPackageId}:${assignment.startAt}:${assignment.employeeId}`;
-    let chunkStart = assignmentStart;
-    let allocatedCostCents = 0;
-    let chunkIndex = 0;
-    while (chunkStart < originalEnd) {
-      const chunkEnd = new Date(Math.min(
-        originalEnd.getTime(),
-        chunkStart.getTime() + MAX_REPAIR_TASK_MINUTES * 60_000,
-      ));
-      const chunkMinutes = minutes({ startAt: chunkStart, endAt: chunkEnd });
-      const isLastChunk = chunkEnd.getTime() === originalEnd.getTime();
-      const chunkCostCents = isLastChunk
-        ? assignment.plannedCostCents - allocatedCostCents
-        : Math.round(
-          assignment.plannedCostCents * chunkMinutes / Math.max(1, assignmentMinutes),
-        );
-      addTask(assignment.employeeId, {
-        id: `${allocationId}:${chunkIndex}`,
-        allocationId,
-        originalMinutes: assignmentMinutes,
-        kind: "WORK_PACKAGE",
-        startAt: chunkStart,
-        endAt: chunkEnd,
-        requiredSkillId: entry.workPackage.requiredSkillId,
-        minimumSkillLevel: entry.workPackage.minimumSkillLevel,
-        criticalKey: entry.project.priority === "CRITICAL"
-          ? `work-package:${assignment.workPackageId}`
-          : null,
-        plannedCostCents: chunkCostCents,
-        movable: true,
-        latestEndAt: boundedEnd < originalEnd ? originalEnd : boundedEnd,
-      });
-      allocatedCostCents += chunkCostCents;
-      chunkStart = chunkEnd;
-      chunkIndex += 1;
-    }
+    addTask(assignment.employeeId, {
+      id: `work:${assignment.workPackageId}:${assignment.startAt}:${assignment.employeeId}`,
+      kind: "WORK_PACKAGE",
+      startAt: new Date(assignment.startAt),
+      endAt: new Date(assignment.endAt),
+      requiredSkillId: entry.workPackage.requiredSkillId,
+      minimumSkillLevel: entry.workPackage.minimumSkillLevel,
+      criticalKey: entry.project.priority === "CRITICAL"
+        ? `work-package:${assignment.workPackageId}`
+        : null,
+      plannedCostCents: assignment.plannedCostCents,
+      movable: true,
+      latestEndAt: boundedEnd < originalEnd ? originalEnd : boundedEnd,
+    });
   }
   for (const assignment of baseline.fixedCoverageAssignments) {
     const requirement = requirementById.get(assignment.projectRequirementId);
     addTask(assignment.employeeId, {
       id: `fixed:${assignment.projectRequirementId}:${assignment.startAt}:${assignment.employeeId}`,
-      allocationId: `fixed:${assignment.projectRequirementId}:${assignment.startAt}:${assignment.employeeId}`,
-      originalMinutes: minutes({
-        startAt: new Date(assignment.startAt),
-        endAt: new Date(assignment.endAt),
-      }),
       kind: "FIXED_COVERAGE",
       startAt: new Date(assignment.startAt),
       endAt: new Date(assignment.endAt),
@@ -661,8 +604,6 @@ export async function buildPortfolioResilienceReport(
   for (const shift of retainedShifts) {
     addTask(shift.employeeId, {
       id: `retained:${shift.id}`,
-      allocationId: `retained:${shift.id}`,
-      originalMinutes: minutes(shift),
       kind: "RETAINED_COMMITMENT",
       startAt: shift.startAt,
       endAt: shift.endAt,
@@ -686,6 +627,7 @@ export async function buildPortfolioResilienceReport(
     }));
 
   const baselineMinutes = baseline.metrics.allocatedMinutes;
+  const repairStartedAt = Date.now();
   const scenarios = baseline.resilienceCandidates.map((candidate) => {
     const scenarioStartedAt = Date.now();
     const tasks = tasksByEmployee.get(candidate.employeeId) ?? [];
@@ -718,10 +660,10 @@ export async function buildPortfolioResilienceReport(
         ? repair.replacementCostCents - removedCostCents
         : null,
       recoverable: lostMinutes === 0 && criticalGapsAtRisk === 0,
-      reassignedAllocations: repair.reassignedAllocationIds.size,
-      rescheduledAllocations: repair.rescheduledAllocationIds.size,
-      displacementMinutes: Math.round(repair.displacementMinutes),
-      ejectedAllocations: repair.ejectedAllocationIds.size,
+      reassignedAllocations: repair.replacementCount,
+      rescheduledAllocations: repair.rescheduledCount,
+      displacementMinutes: repair.displacementMinutes,
+      ejectedAllocations: repair.ejectionCount,
       runtimeMs: Date.now() - scenarioStartedAt,
     };
   });
@@ -745,14 +687,15 @@ export async function buildPortfolioResilienceReport(
     .filter((scenario) => !scenario.recoverable)
     .map((scenario) => scenario.employeeName);
 
+  const finishedAt = Date.now();
   return {
     previewId: baseline.previewId,
     inputVersion: baseline.inputVersion,
     horizonStart: baseline.horizonStart,
     horizonEndExclusive: baseline.horizonEndExclusive,
     horizonWeeks: baseline.horizonWeeks,
-    algorithmVersion: "portfolio-resilience-n-minus-one-v6",
-    strategy: "DETERMINISTIC_FRAGMENT_AWARE_EJECTION_REPAIR",
+    algorithmVersion: "portfolio-resilience-n-minus-one-v7",
+    strategy: "DETERMINISTIC_BOUNDED_INDEXED_EJECTION_REPAIR",
     scorePercent: averageCoveragePercent,
     averageCoveragePercent,
     worstCaseCoveragePercent,
@@ -769,7 +712,12 @@ export async function buildPortfolioResilienceReport(
     employeesWithNoFullReplacement,
     worstCaseEmployee: scenarios[0]?.employeeName ?? null,
     baselineAllocatedMinutes: baselineMinutes,
-    runtimeMs: Date.now() - startedAt,
+    runtimeMs: finishedAt - startedAt,
+    runtimeBreakdown: {
+      baselineMs: baselineFinishedAt - startedAt,
+      preparationMs: repairStartedAt - baselineFinishedAt,
+      repairMs: finishedAt - repairStartedAt,
+    },
     scenarios,
   };
 }

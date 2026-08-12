@@ -232,83 +232,6 @@ describe("multi-week portfolio planner", () => {
     });
   });
 
-  it("splits an affected allocation across fragmented replacement capacity", async () => {
-    const planningDatabase = database(
-      [project()],
-      [],
-      [
-        employee({
-          id: 1,
-          name: "Full-day primary",
-          preferredWeeklyMinutes: 480,
-          maxWeeklyMinutes: 480,
-          hourlyCostCents: 4_000,
-          availability: [{
-            id: 1,
-            employeeId: 1,
-            dayOfWeek: "MONDAY",
-            startMinute: 9 * 60,
-            endMinute: 17 * 60,
-          }],
-        }),
-        employee({
-          id: 2,
-          name: "Morning replacement",
-          preferredWeeklyMinutes: 240,
-          maxWeeklyMinutes: 240,
-          hourlyCostCents: 5_000,
-          availability: [{
-            id: 2,
-            employeeId: 2,
-            dayOfWeek: "MONDAY",
-            startMinute: 9 * 60,
-            endMinute: 13 * 60,
-          }],
-          skills: [{ employeeId: 2, skillId: 1, level: 5 }],
-        }),
-        employee({
-          id: 3,
-          name: "Afternoon replacement",
-          preferredWeeklyMinutes: 240,
-          maxWeeklyMinutes: 240,
-          hourlyCostCents: 5_000,
-          availability: [{
-            id: 3,
-            employeeId: 3,
-            dayOfWeek: "MONDAY",
-            startMinute: 13 * 60,
-            endMinute: 17 * 60,
-          }],
-          skills: [{ employeeId: 3, skillId: 1, level: 5 }],
-        }),
-      ],
-    );
-    const options = {
-      horizonStart: "2026-08-10",
-      horizonWeeks: 1,
-      replaceGenerated: true,
-    };
-    const preview = await buildPortfolioPlanPreview(planningDatabase, options);
-    expect(preview.assignments).toEqual([
-      expect.objectContaining({ employeeId: 1, workPackageId: 10 }),
-    ]);
-
-    const report = await buildPortfolioResilienceReport(planningDatabase, {
-      ...options,
-      previewId: preview.previewId,
-      inputVersion: preview.inputVersion,
-    });
-    const primaryAbsence = report.scenarios.find(
-      (scenario) => scenario.employeeName === "Full-day primary",
-    );
-
-    expect(primaryAbsence).toMatchObject({
-      lostMinutes: 0,
-      recoverable: true,
-      reassignedAllocations: 1,
-    });
-  });
-
   it("recovers an absence through a bounded two-step allocation chain", async () => {
     const apiPackage = workPackage({
       id: 10,
@@ -477,7 +400,7 @@ describe("multi-week portfolio planner", () => {
       optimizerRunner,
     });
 
-    expect(report.algorithmVersion).toBe("portfolio-resilience-n-minus-one-v6");
+    expect(report.algorithmVersion).toBe("portfolio-resilience-n-minus-one-v7");
     expect(report.testedAbsences).toBe(13);
     expect(report.scenarios).toHaveLength(13);
     expect(optimizerRunner).toHaveBeenCalledTimes(1);
