@@ -294,7 +294,7 @@ export async function buildPortfolioPlanPreview(
       options.excludedEmployeeIds ?? [],
     );
 
-  const portfolioInputsPromise = Promise.all([
+  const loadPortfolioInputs = () => Promise.all([
     database.employee.findMany({
       where: {
         archivedAt: null,
@@ -327,10 +327,10 @@ export async function buildPortfolioPlanPreview(
       orderBy: { id: "asc" },
     }),
   ]);
-  const [fixedPreviews, [employees, projects, horizonShifts, futureWorkPackageShifts]] = await Promise.all([
-    fixedPreviewsPromise,
-    portfolioInputsPromise,
-  ]);
+  const [fixedPreviews, portfolioInputs] = options.fixedPreviewRunner
+    ? await Promise.all([fixedPreviewsPromise, loadPortfolioInputs()])
+    : [await fixedPreviewsPromise, await loadPortfolioInputs()];
+  const [employees, projects, horizonShifts, futureWorkPackageShifts] = portfolioInputs;
 
   const workPackages = projects.flatMap((project) => project.workPackages.map((workPackage) => ({ project, workPackage })));
   if (workPackages.length > MAX_WORK_PACKAGES) throw new Error("PLANNING_INPUT_TOO_LARGE");

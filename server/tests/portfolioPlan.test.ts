@@ -133,6 +133,30 @@ describe("multi-week portfolio planner", () => {
     expect(preview.metrics.proposedWorkMinutes).toBe(480);
   });
 
+  it("keeps direct preview reads behind the fixed-coverage pool wave", async () => {
+    const planningDatabase = database([project()]);
+    let releaseRequirements!: (value: []) => void;
+    planningDatabase.projectRequirement.findMany.mockReturnValue(new Promise<[]>(
+      (resolve) => { releaseRequirements = resolve; },
+    ));
+
+    const previewPromise = buildPortfolioPlanPreview(planningDatabase, {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 1,
+      replaceGenerated: true,
+    });
+
+    await vi.waitFor(() => {
+      expect(planningDatabase.projectRequirement.findMany).toHaveBeenCalledTimes(1);
+    });
+    expect(planningDatabase.project.findMany).not.toHaveBeenCalled();
+
+    releaseRequirements([]);
+    const preview = await previewPromise;
+    expect(planningDatabase.project.findMany).toHaveBeenCalledTimes(1);
+    expect(preview.metrics.proposedWorkMinutes).toBe(480);
+  });
+
   it("compares all profiles against one memoized database snapshot", async () => {
     const planningDatabase = database([project()]);
     const fixedPreviewRunner = vi.fn(buildSchedulePreview);
