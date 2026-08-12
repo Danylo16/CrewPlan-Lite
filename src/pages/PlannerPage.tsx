@@ -383,7 +383,7 @@ export function PlannerPage() {
             <div className="resilience-scenario-header"><span>Removed employee</span><span>Affected plan</span><span>Coverage retained</span><span>Unrecovered</span><span>Cost change</span><span>Result</span></div>
             {resilience.scenarios.map((scenario) => <div key={scenario.employeeId}>
               <strong>{scenario.employeeName}</strong>
-              <span>{scenario.affectedAllocations} affected · {scenario.reassignedAllocations} reassigned{scenario.rescheduledAllocations > 0 ? ` · ${scenario.rescheduledAllocations} moved` : ""} · {hours(scenario.affectedMinutes)}</span>
+              <span>{scenario.affectedAllocations} affected · {scenario.reassignedAllocations} reassigned{scenario.ejectedAllocations > 0 ? ` · ${scenario.ejectedAllocations} chained` : ""}{scenario.rescheduledAllocations > 0 ? ` · ${scenario.rescheduledAllocations} moved` : ""} · {hours(scenario.affectedMinutes)}</span>
               <span>{scenario.coveragePercent}%</span>
               <span>{hours(scenario.lostMinutes)}{scenario.criticalGapsAtRisk > 0 ? ` · ${scenario.criticalGapsAtRisk} critical gaps` : ""}</span>
               <span>{scenario.additionalCostCents === null ? "Not comparable" : scenario.additionalCostCents === 0 ? "—" : `${scenario.additionalCostCents > 0 ? "+" : "−"}${money(Math.abs(scenario.additionalCostCents))}`}</span>

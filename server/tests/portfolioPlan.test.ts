@@ -228,6 +228,98 @@ describe("multi-week portfolio planner", () => {
     });
   });
 
+  it("recovers an absence through a bounded two-step allocation chain", async () => {
+    const apiPackage = workPackage({
+      id: 10,
+      name: "API delivery",
+      requiredSkillId: 1,
+      sortOrder: 0,
+    });
+    const opsPackage = workPackage({
+      id: 11,
+      name: "Operations delivery",
+      requiredSkillId: 2,
+      sortOrder: 1,
+    });
+    const monday = [{
+      id: 1,
+      employeeId: 1,
+      dayOfWeek: "MONDAY",
+      startMinute: 9 * 60,
+      endMinute: 17 * 60,
+    }];
+    const tuesday = [{
+      id: 3,
+      employeeId: 3,
+      dayOfWeek: "TUESDAY",
+      startMinute: 9 * 60,
+      endMinute: 17 * 60,
+    }];
+    const planningDatabase = database(
+      [project([apiPackage, opsPackage])],
+      [],
+      [
+        employee({
+          id: 1,
+          name: "API primary",
+          preferredWeeklyMinutes: 480,
+          maxWeeklyMinutes: 480,
+          hourlyCostCents: 4_000,
+          availability: monday,
+          skills: [{ employeeId: 1, skillId: 1, level: 5 }],
+        }),
+        employee({
+          id: 2,
+          name: "Multi-skilled blocker",
+          preferredWeeklyMinutes: 480,
+          maxWeeklyMinutes: 480,
+          hourlyCostCents: 5_000,
+          availability: monday.map((item) => ({ ...item, id: 2, employeeId: 2 })),
+          skills: [
+            { employeeId: 2, skillId: 1, level: 5 },
+            { employeeId: 2, skillId: 2, level: 5 },
+          ],
+        }),
+        employee({
+          id: 3,
+          name: "Tuesday ops replacement",
+          preferredWeeklyMinutes: 480,
+          maxWeeklyMinutes: 480,
+          hourlyCostCents: 6_000,
+          availability: tuesday,
+          skills: [{ employeeId: 3, skillId: 2, level: 5 }],
+        }),
+      ],
+    );
+    const options = {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 1,
+      replaceGenerated: true,
+    };
+    const preview = await buildPortfolioPlanPreview(planningDatabase, options);
+    expect(preview.assignments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ workPackageId: 10, employeeId: 1 }),
+      expect.objectContaining({ workPackageId: 11, employeeId: 2 }),
+    ]));
+
+    const report = await buildPortfolioResilienceReport(planningDatabase, {
+      ...options,
+      previewId: preview.previewId,
+      inputVersion: preview.inputVersion,
+    });
+    const primaryAbsence = report.scenarios.find(
+      (scenario) => scenario.employeeName === "API primary",
+    );
+
+    expect(primaryAbsence).toMatchObject({
+      lostMinutes: 0,
+      recoverable: true,
+      reassignedAllocations: 2,
+      rescheduledAllocations: 1,
+      ejectedAllocations: 1,
+    });
+  });
+
   it("identifies a scheduled employee with no replacement", async () => {
     const planningDatabase = database([project()]);
     const options = {
@@ -304,7 +396,7 @@ describe("multi-week portfolio planner", () => {
       optimizerRunner,
     });
 
-    expect(report.algorithmVersion).toBe("portfolio-resilience-n-minus-one-v4");
+    expect(report.algorithmVersion).toBe("portfolio-resilience-n-minus-one-v5");
     expect(report.testedAbsences).toBe(13);
     expect(report.scenarios).toHaveLength(13);
     expect(optimizerRunner).toHaveBeenCalledTimes(1);

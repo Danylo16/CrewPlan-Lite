@@ -356,6 +356,7 @@ export interface PortfolioResilienceScenario {
   reassignedAllocations: number;
   rescheduledAllocations: number;
   displacementMinutes: number;
+  ejectedAllocations: number;
   runtimeMs: number;
 }
 
