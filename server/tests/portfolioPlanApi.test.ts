@@ -6,7 +6,13 @@ const scenariosMock = vi.hoisted(() => vi.fn());
 const resilienceMock = vi.hoisted(() => vi.fn());
 const prismaMock = vi.hoisted(() => ({
   shift: { deleteMany: vi.fn(), createMany: vi.fn() },
-  planningRun: { updateMany: vi.fn(), create: vi.fn(), findMany: vi.fn() },
+  planningRun: {
+    updateMany: vi.fn(),
+    create: vi.fn(),
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+  },
+  workLog: { update: vi.fn(), delete: vi.fn() },
   $transaction: vi.fn(),
 }));
 
@@ -45,7 +51,49 @@ const preview = {
     startAt: "2026-08-11T07:00:00.000Z",
     endAt: "2026-08-11T09:00:00.000Z",
   }],
-  optimizerDiagnostics: { runtimeMs: 12 },
+  unplannedWorkPackages: [],
+  optimizerDiagnostics: {
+    algorithmVersion: "portfolio-beam-v3",
+    strategy: "DETERMINISTIC_BOUNDED_BEAM_SEARCH",
+    planningProfile: "BALANCED",
+    beamWidth: 24,
+    packageVariantWidth: 8,
+    branchWidth: 6,
+    orderExploredStates: 20,
+    placementExploredStates: 40,
+    orderPrunedStates: 10,
+    placementPrunedStates: 15,
+    placementStateLimit: 3_000,
+    exploredStates: 60,
+    prunedStates: 25,
+    dominancePrunedStates: 5,
+    evaluatedPlans: 11,
+    searchLimitReached: false,
+    dependencyCyclePackageIds: [],
+    runtimeMs: 12,
+    objectiveVector: {
+      criticalUnplannedMinutes: 0,
+      highUnplannedMinutes: 0,
+      normalUnplannedMinutes: 0,
+      lowUnplannedMinutes: 0,
+      hardDeadlineExposureMinutes: 0,
+      softDeadlineExposureMinutes: 0,
+      weeklyBudgetOverrunCents: 0,
+      totalBudgetOverrunCents: 0,
+      overtimeMinutes: 0,
+      laborCostCents: 24_000,
+      imbalanceBasisPoints: 0,
+      singlePointExposureMinutes: 240,
+      maxRecoveryShortfallMinutes: 240,
+      skillConcentrationBasisPoints: 10_000,
+    },
+    greedyBaseline: { plannedMinutes: 240, unplannedMinutes: 0, overtimeMinutes: 0, laborCostCents: 24_000 },
+    v1Baseline: { plannedMinutes: 240, unplannedMinutes: 0, overtimeMinutes: 0, laborCostCents: 24_000 },
+    optimized: { plannedMinutes: 240, unplannedMinutes: 0, overtimeMinutes: 0, laborCostCents: 24_000 },
+    improvement: { plannedMinutes: 0, unplannedMinutes: 0, overtimeMinutes: 0, laborCostCents: 0 },
+    improvementVsV1: { plannedMinutes: 0, unplannedMinutes: 0, overtimeMinutes: 0, laborCostCents: 0 },
+  },
+  warnings: [],
   metrics: { proposedWorkMinutes: 240, proposedFixedCoverageMinutes: 120, plannedCostCents: 24_000, assignedWorkPackages: 1, unplannedWorkPackages: 0 },
 };
 
@@ -97,7 +145,7 @@ describe("portfolio planning API", () => {
       inputVersion: version,
     });
 
-    expect(response.status).toBe(201);
+    expect(response.status, response.text).toBe(201);
     expect(previewMock).toHaveBeenCalledWith(prismaMock, {
       horizonStart: "2026-08-10",
       horizonWeeks: 2,
@@ -107,6 +155,7 @@ describe("portfolio planning API", () => {
     expect(response.body.createdShifts).toBe(2);
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.headers["server-timing"]).toMatch(/^total;dur=/);
+    expect(response.body.evidenceVersion).toBe("planning-run-evidence-v1");
     expect(prismaMock.shift.deleteMany).toHaveBeenCalledWith({
       where: expect.objectContaining({ origin: "SOLVER", status: "COMMITTED" }),
     });
@@ -116,6 +165,26 @@ describe("portfolio planning API", () => {
         expect.objectContaining({ kind: "FIXED_COVERAGE", projectRequirementId: 5 }),
       ]),
     });
+    expect(prismaMock.planningRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        evidence: expect.objectContaining({
+          evidenceVersion: "planning-run-evidence-v1",
+          plan: expect.objectContaining({
+            allocations: expect.arrayContaining([
+              expect.objectContaining({ kind: "WORK_PACKAGE", workPackageId: 10 }),
+              expect.objectContaining({ kind: "FIXED_COVERAGE", projectRequirementId: 5 }),
+            ]),
+          }),
+          optimizer: expect.objectContaining({
+            algorithmVersion: "portfolio-beam-v3",
+            objectiveVector: preview.optimizerDiagnostics.objectiveVector,
+            search: expect.objectContaining({ searchLimitReached: false }),
+          }),
+        }),
+      }),
+    });
+    expect(prismaMock.workLog.update).not.toHaveBeenCalled();
+    expect(prismaMock.workLog.delete).not.toHaveBeenCalled();
   });
 
   it("returns uncached preview timing and a request correlation ID", async () => {
@@ -220,5 +289,98 @@ describe("portfolio planning API", () => {
       recovery: "REGENERATE_PREVIEW",
     });
     expect(response.headers["server-timing"]).toMatch(/^total;dur=/);
+  });
+
+  it("returns normalized evidence-aware and legacy planning history", async () => {
+    const baseRun = {
+      id: "11111111-1111-4111-8111-111111111111",
+      previewId: hash,
+      inputVersion: version,
+      horizonStart: new Date("2026-08-10T00:00:00.000Z"),
+      horizonEndExclusive: new Date("2026-08-24T00:00:00.000Z"),
+      replaceMode: "REPLACE_GENERATED",
+      status: "APPLIED",
+      configuration: { planningProfile: "BALANCED", horizonWeeks: 2 },
+      metrics: { plannedCostCents: 24_000, unplannedWorkPackages: 0 },
+      appliedAt: new Date("2026-08-12T12:00:00.000Z"),
+      supersededAt: null,
+    };
+    prismaMock.planningRun.findMany.mockResolvedValue([
+      {
+        ...baseRun,
+        evidence: {
+          evidenceVersion: "planning-run-evidence-v1",
+          optimizer: {
+            planningProfile: "BALANCED",
+            algorithmVersion: "portfolio-beam-v3",
+            strategy: "DETERMINISTIC_BOUNDED_BEAM_SEARCH",
+            objectiveVector: { softDeadlineExposureMinutes: 0 },
+            search: { searchLimitReached: false, evaluatedPlans: 11 },
+          },
+        },
+      },
+      {
+        ...baseRun,
+        id: "22222222-2222-2222-2222-222222222222",
+        previewId: "c".repeat(64),
+        evidence: null,
+      },
+    ]);
+
+    const response = await request(app).get("/api/portfolio-plan/runs");
+
+    expect(response.status).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.body[0]).toMatchObject({
+      hasEvidence: true,
+      algorithmVersion: "portfolio-beam-v3",
+      planningProfile: "BALANCED",
+    });
+    expect(response.body[1]).toMatchObject({
+      hasEvidence: false,
+      algorithmVersion: null,
+      planningProfile: "BALANCED",
+    });
+  });
+
+  it("returns planning run detail with its immutable allocation snapshot", async () => {
+    prismaMock.planningRun.findUnique.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      previewId: hash,
+      inputVersion: version,
+      horizonStart: new Date("2026-08-10T00:00:00.000Z"),
+      horizonEndExclusive: new Date("2026-08-24T00:00:00.000Z"),
+      replaceMode: "REPLACE_GENERATED",
+      status: "APPLIED",
+      configuration: { planningProfile: "BALANCED", horizonWeeks: 2 },
+      metrics: { plannedCostCents: 24_000 },
+      evidence: {
+        evidenceVersion: "planning-run-evidence-v1",
+        plan: { allocations: [{ kind: "WORK_PACKAGE", employeeId: 1 }] },
+      },
+      appliedAt: new Date("2026-08-12T12:00:00.000Z"),
+      supersededAt: null,
+      shifts: [{ id: 9, employee: { name: "Anna" }, project: { name: "Payments" } }],
+    });
+
+    const response = await request(app)
+      .get("/api/portfolio-plan/runs/11111111-1111-4111-8111-111111111111");
+
+    expect(response.status).toBe(200);
+    expect(response.body.allocationSnapshot).toHaveLength(1);
+    expect(response.body.currentAllocations).toHaveLength(1);
+    expect(response.body.evidence.evidenceVersion).toBe("planning-run-evidence-v1");
+    expect(prismaMock.planningRun.findUnique).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "11111111-1111-4111-8111-111111111111" },
+      include: expect.any(Object),
+    }));
+  });
+
+  it("rejects an invalid planning run id before querying the database", async () => {
+    const response = await request(app).get("/api/portfolio-plan/runs/not-a-uuid");
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VALIDATION_ERROR");
+    expect(prismaMock.planningRun.findUnique).not.toHaveBeenCalled();
   });
 });

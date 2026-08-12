@@ -8,6 +8,13 @@ const migration = readFileSync(
   ),
   "utf8",
 );
+const evidenceMigration = readFileSync(
+  new URL(
+    "../prisma/migrations/20260812190000_add_planning_run_evidence/migration.sql",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 describe("portfolio migration safety", () => {
   it("expands the Shift table without dropping or renaming it", () => {
@@ -25,5 +32,12 @@ describe("portfolio migration safety", () => {
   it("does not invent total budgets from weekly budgets", () => {
     expect(migration).toContain('ADD COLUMN "totalLaborBudgetCents" INTEGER');
     expect(migration).not.toMatch(/UPDATE\s+"Project"[\s\S]+"totalLaborBudgetCents"/);
+  });
+
+  it("adds nullable run evidence without rewriting historical planning runs", () => {
+    expect(evidenceMigration).toContain('ALTER TABLE "PlanningRun"');
+    expect(evidenceMigration).toContain('ADD COLUMN "evidence" JSONB');
+    expect(evidenceMigration).not.toContain("NOT NULL");
+    expect(evidenceMigration).not.toContain("UPDATE");
   });
 });

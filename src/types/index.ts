@@ -445,5 +445,65 @@ export interface AppliedPortfolioPlan {
   previewId: string;
   createdShifts: number;
   deletedShifts: number;
+  evidenceVersion: string;
   metrics: PortfolioPlanPreview["metrics"];
+}
+
+export interface PlanningRunSummary {
+  id: string;
+  previewId: string;
+  inputVersion: string;
+  horizonStart: string;
+  horizonEndExclusive: string;
+  replaceMode: "REPLACE_GENERATED" | "KEEP_EXISTING";
+  status: "APPLIED" | "SUPERSEDED";
+  planningProfile: PlanningProfile | null;
+  algorithmVersion: string | null;
+  strategy: string | null;
+  evidenceVersion: string | null;
+  hasEvidence: boolean;
+  metrics: Partial<PortfolioPlanPreview["metrics"]>;
+  objectiveVector: Partial<PortfolioOptimizerDiagnostics["objectiveVector"]> | null;
+  searchDiagnostics: {
+    orderExploredStates?: number;
+    placementExploredStates?: number;
+    orderPrunedStates?: number;
+    placementPrunedStates?: number;
+    dominancePrunedStates?: number;
+    evaluatedPlans?: number;
+    searchLimitReached?: boolean;
+  } | null;
+  appliedAt: string;
+  supersededAt: string | null;
+}
+
+export interface PlanningRunDetail extends PlanningRunSummary {
+  configuration: Record<string, unknown>;
+  evidence: Record<string, unknown>;
+  allocationSnapshot: Array<{
+    kind: "WORK_PACKAGE" | "FIXED_COVERAGE";
+    employeeId: number;
+    projectId: number;
+    workPackageId: number | null;
+    projectRequirementId: number | null;
+    startAt: string;
+    endAt: string;
+    plannedCostCents: number | null;
+  }>;
+  currentAllocations: Array<{
+    id: number;
+    employeeId: number;
+    projectId: number;
+    workPackageId: number | null;
+    projectRequirementId: number | null;
+    startAt: string;
+    endAt: string;
+    kind: string;
+    origin: string;
+    status: string;
+    plannedCostCents: number | null;
+    employee: { name: string };
+    project: { name: string };
+    workPackage: { name: string } | null;
+  }>;
 }

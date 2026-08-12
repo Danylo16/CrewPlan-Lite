@@ -1,7 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ApiRequestError, apiRequest } from "../api/client";
 import type {
   AppliedPortfolioPlan,
+  PlanningRunDetail,
+  PlanningRunSummary,
   PlanningProfile,
   PortfolioPlanPreview,
   PortfolioResilienceReport,
@@ -106,6 +108,27 @@ export function PlannerPage() {
   const [applied, setApplied] = useState<AppliedPortfolioPlan | null>(null);
   const [resilience, setResilience] = useState<PortfolioResilienceReport | null>(null);
   const [isTestingResilience, setIsTestingResilience] = useState(false);
+  const [planningRuns, setPlanningRuns] = useState<PlanningRunSummary[]>([]);
+  const [selectedRun, setSelectedRun] = useState<PlanningRunDetail | null>(null);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void apiRequest<PlanningRunSummary[]>("/portfolio-plan/runs")
+      .then((runs) => {
+        if (active) setPlanningRuns(runs);
+      })
+      .catch((historyLoadError: unknown) => {
+        if (active) setHistoryError(historyLoadError instanceof Error
+          ? historyLoadError.message
+          : "Could not load planning history");
+      })
+      .finally(() => {
+        if (active) setIsLoadingHistory(false);
+      });
+    return () => { active = false; };
+  }, []);
 
   const assignmentsByWeek = useMemo(() => {
     const grouped = new Map<string, PortfolioPlanPreview["assignments"]>();
@@ -159,6 +182,38 @@ export function PlannerPage() {
       return "Portfolio data changed. The stale decision was discarded; generate a new preview.";
     }
     return error instanceof Error ? error.message : fallback;
+  }
+
+  async function loadPlanningHistory(preferredRunId?: string) {
+    setIsLoadingHistory(true);
+    setHistoryError(null);
+    try {
+      const runs = await apiRequest<PlanningRunSummary[]>("/portfolio-plan/runs");
+      setPlanningRuns(runs);
+      const targetId = preferredRunId ?? selectedRun?.id;
+      if (targetId !== undefined && runs.some((run) => run.id === targetId)) {
+        setSelectedRun(await apiRequest<PlanningRunDetail>(`/portfolio-plan/runs/${targetId}`));
+      } else if (targetId !== undefined) {
+        setSelectedRun(null);
+      }
+    } catch (historyLoadError) {
+      setHistoryError(historyLoadError instanceof Error
+        ? historyLoadError.message
+        : "Could not load planning history");
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  }
+
+  async function openPlanningRun(runId: string) {
+    setHistoryError(null);
+    try {
+      setSelectedRun(await apiRequest<PlanningRunDetail>(`/portfolio-plan/runs/${runId}`));
+    } catch (historyLoadError) {
+      setHistoryError(historyLoadError instanceof Error
+        ? historyLoadError.message
+        : "Could not load planning run evidence");
+    }
   }
 
   async function generate(profile = planningProfile) {
@@ -241,10 +296,11 @@ export function PlannerPage() {
     try {
       const result = await apiRequest<AppliedPortfolioPlan>("/portfolio-plan/apply", {
         method: "POST",
-        body: JSON.stringify({ horizonStart: preview.horizonStart, horizonWeeks: preview.horizonWeeks, replaceGenerated: preview.replaceGenerated, planningProfile: preview.planningProfile, previewId: preview.previewId, inputVersion: preview.inputVersion }),
+        body: JSON.stringify({ horizonStart: preview.horizonStart, horizonWeeks: preview.horizonWeeks, replaceGenerated: preview.replaceGenerated, planningProfile: preview.planningProfile, previewId: preview.previewId, inputVersion: preview.inputVersion, comparisonId: comparison?.comparisonId }),
       });
       setApplied(result);
       setPreview(null);
+      await loadPlanningHistory(result.planningRunId);
     } catch (applyError) {
       setError(planningErrorMessage(applyError, "Could not apply plan"));
     } finally {
@@ -267,6 +323,24 @@ export function PlannerPage() {
     </div>
     {error && <div className="error-message portfolio-error">{error}</div>}
     {applied && <div className="planner-success"><strong>Plan applied.</strong><span>{applied.createdShifts} allocations created, {applied.deletedShifts} generated allocations replaced.</span></div>}
+
+    <section className="planner-dashboard-section planning-history">
+      <div className="planner-section-heading"><div><span>Decision audit</span><h3>Planning history</h3><p>Applied plans keep their input hashes, objective evidence and an immutable allocation snapshot.</p></div><button className="secondary-button" disabled={isLoadingHistory} type="button" onClick={() => void loadPlanningHistory()}>{isLoadingHistory ? "Loading…" : "Refresh history"}</button></div>
+      {historyError && <div className="error-message">{historyError}</div>}
+      {!isLoadingHistory && planningRuns.length === 0 && <div className="history-empty">No portfolio plan has been applied yet.</div>}
+      {planningRuns.length > 0 && <div className="planning-history-layout">
+        <div className="planning-run-list">{planningRuns.map((run) => <button className={selectedRun?.id === run.id ? "planning-run-selected" : ""} type="button" key={run.id} onClick={() => void openPlanningRun(run.id)}>
+          <span><strong>{run.planningProfile?.replaceAll("_", " ") ?? "Legacy run"}</strong><small>{new Date(run.appliedAt).toLocaleString()} · {run.horizonStart} → {run.horizonEndExclusive}</small></span>
+          <span><b>{run.metrics.plannedCostCents === undefined ? "—" : money(run.metrics.plannedCostCents)}</b><small>{run.status.toLowerCase()}</small></span>
+        </button>)}</div>
+        <div className="planning-run-detail">{selectedRun === null
+          ? <div className="history-empty">Select a run to inspect its evidence.</div>
+          : <><div className="planning-run-detail-heading"><div><span>{selectedRun.evidenceVersion ?? "legacy evidence"}</span><strong>{selectedRun.algorithmVersion ?? "Algorithm metadata was not recorded"}</strong><small>{selectedRun.strategy === null ? "Historical run" : strategyLabel(selectedRun.strategy)}</small></div><b className={selectedRun.searchDiagnostics?.searchLimitReached ? "history-limit-reached" : ""}>{selectedRun.searchDiagnostics === null ? "No search diagnostics" : selectedRun.searchDiagnostics.searchLimitReached ? "Search limit reached" : "Search completed"}</b></div>
+            <dl className="planning-run-facts"><div><dt>Preview</dt><dd>{selectedRun.previewId.slice(0, 12)}…</dd></div><div><dt>Input</dt><dd>{selectedRun.inputVersion.slice(0, 12)}…</dd></div><div><dt>Recorded allocations</dt><dd>{selectedRun.allocationSnapshot.length || selectedRun.currentAllocations.length}</dd></div><div><dt>Currently retained</dt><dd>{selectedRun.currentAllocations.length}</dd></div><div><dt>Candidates</dt><dd>{selectedRun.searchDiagnostics?.evaluatedPlans ?? "—"}</dd></div><div><dt>Deadline exposure</dt><dd>{hours((selectedRun.objectiveVector?.hardDeadlineExposureMinutes ?? 0) + (selectedRun.objectiveVector?.softDeadlineExposureMinutes ?? 0))}</dd></div><div><dt>Skill concentration</dt><dd>{selectedRun.objectiveVector?.skillConcentrationBasisPoints === undefined ? "—" : `${(selectedRun.objectiveVector.skillConcentrationBasisPoints / 100).toFixed(0)}%`}</dd></div></dl>
+          </>}
+        </div>
+      </div>}
+    </section>
 
     {comparison && <section className="planner-dashboard-section scenario-comparison">
       <div className="planner-section-heading"><div><span>Decision support</span><h3>One Pareto frontier, four planning objectives</h3><p>All objectives select from the same multi-objective candidate pool, so cost, deadline and resilience trade-offs are directly comparable. Review recomputes the selected objective with the full optimizer before Apply or N−1 validation.</p></div><div className="scenario-runtime"><span>Pareto search runtime</span><strong>{(comparison.runtimeMs / 1000).toFixed(1)}s</strong></div></div>

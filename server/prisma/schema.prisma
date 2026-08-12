@@ -228,6 +228,7 @@ model PlanningRun {
   status              PlanningRunStatus   @default(APPLIED)
   configuration       Json
   metrics             Json
+  evidence            Json?
   appliedAt           DateTime            @default(now())
   supersededAt        DateTime?
   shifts              Shift[]
