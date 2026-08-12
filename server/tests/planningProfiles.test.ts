@@ -4,11 +4,13 @@ import {
   allocatePortfolioScenarioPlans,
   allocatePortfolioWork,
 } from "../src/planning/portfolioPlacementOptimizer.js";
-import type {
-  OptimizerEmployee,
-  OptimizerProject,
-  PlanningProfile,
-  PortfolioOptimizerInput,
+import {
+  createObjectiveScoringContext,
+  objectiveComponents,
+  type OptimizerEmployee,
+  type OptimizerProject,
+  type PlanningProfile,
+  type PortfolioOptimizerInput,
 } from "../src/planning/portfolioOptimizer.js";
 import { SCHEDULE_TIME_ZONE } from "../src/scheduling/timeAdapter.js";
 
@@ -220,5 +222,51 @@ describe("portfolio planning profiles", () => {
     expect(deadlineFirst.optimizerDiagnostics.optimized.laborCostCents).toBe(52_000);
     expect(deadlineFirst.optimizerDiagnostics.objectiveVector.softDeadlineExposureMinutes)
       .toBe(0);
+  });
+
+  it("reuses static objective indexes without changing plan scoring", () => {
+    const portfolioInput = input(
+      "RESILIENCE_FIRST",
+      [
+        employee(1, "Primary", 4_000, fullWeek, 960),
+        employee(2, "Backup", 5_000, fullWeek, 480),
+      ],
+      project(960, null),
+    );
+    const result = allocatePortfolioWork(portfolioInput);
+    const plan = {
+      assignments: result.assignments,
+      unplannedWorkPackages: result.unplannedWorkPackages,
+    };
+
+    expect(objectiveComponents(
+      plan,
+      portfolioInput,
+      true,
+      createObjectiveScoringContext(portfolioInput),
+    )).toEqual(objectiveComponents(plan, portfolioInput));
+  });
+
+  it("does not compute resilience dimensions for comparisons that do not request them", () => {
+    const plans = allocatePortfolioScenarioPlans(
+      input(
+        "BALANCED",
+        [
+          employee(1, "Early", 8_000, ["MONDAY"]),
+          employee(2, "Cheap", 4_000, ["TUESDAY"]),
+        ],
+        project(480, new Date("2026-08-10T00:00:00.000Z")),
+      ),
+      ["COST_FIRST", "DEADLINE_FIRST"],
+    );
+
+    expect(plans.get("COST_FIRST")!.optimizerDiagnostics.objectiveVector)
+      .toMatchObject({
+        singlePointExposureMinutes: 0,
+        maxRecoveryShortfallMinutes: 0,
+        skillConcentrationBasisPoints: 0,
+      });
+    expect(plans.get("COST_FIRST")!.assignments[0]?.employeeId).toBe(2);
+    expect(plans.get("DEADLINE_FIRST")!.assignments[0]?.employeeId).toBe(1);
   });
 });

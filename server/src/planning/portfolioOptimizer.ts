@@ -90,6 +90,17 @@ export interface PortfolioOptimizerInput {
   comparisonProfiles?: PlanningProfile[];
 }
 
+export interface ObjectiveScoringContext {
+  projectById: Map<number, OptimizerProject>;
+  workPackageById: Map<number, {
+    project: OptimizerProject;
+    workPackage: OptimizerWorkPackage;
+  }>;
+  qualifiedEmployeesByRequirement: Map<string, OptimizerEmployee[]>;
+  horizonWeeks: number;
+  occupiedByEmployee: Map<number, number>;
+}
+
 export interface UnplannedWorkPackage {
   workPackageId: number;
   projectId: number;
@@ -521,11 +532,13 @@ export function objectiveVectorFromComponents(
   ];
 }
 
-export function objectiveComponents(
-  result: ReturnType<typeof allocatePortfolioWorkGreedy>,
+function skillRequirementKey(skillId: number, minimumSkillLevel: number) {
+  return `${skillId}:${minimumSkillLevel}`;
+}
+
+export function createObjectiveScoringContext(
   input: PortfolioOptimizerInput,
-  includeResilienceProxy = true,
-) {
+): ObjectiveScoringContext {
   const projectById = new Map(input.projects.map((project) => [project.id, project]));
   const workPackageById = new Map(
     input.projects.flatMap((project) => project.workPackages.map((workPackage) => [
@@ -533,6 +546,46 @@ export function objectiveComponents(
       { project, workPackage },
     ] as const)),
   );
+  const qualifiedEmployeesByRequirement = new Map<string, OptimizerEmployee[]>();
+  for (const { workPackage } of workPackageById.values()) {
+    const key = skillRequirementKey(
+      workPackage.requiredSkillId,
+      workPackage.minimumSkillLevel,
+    );
+    if (qualifiedEmployeesByRequirement.has(key)) continue;
+    qualifiedEmployeesByRequirement.set(
+      key,
+      input.employees.filter((employee) => employee.skills.some(
+        (skill) => skill.skillId === workPackage.requiredSkillId
+          && skill.level >= workPackage.minimumSkillLevel,
+      )),
+    );
+  }
+  const occupiedByEmployee = new Map<number, number>();
+  for (const interval of input.occupiedIntervals) {
+    occupiedByEmployee.set(
+      interval.employeeId,
+      (occupiedByEmployee.get(interval.employeeId) ?? 0)
+        + Math.round((interval.endAt.getTime() - interval.startAt.getTime()) / 60_000),
+    );
+  }
+  return {
+    projectById,
+    workPackageById,
+    qualifiedEmployeesByRequirement,
+    horizonWeeks: Math.max(1, Math.ceil(input.end.diff(input.start, "weeks").weeks)),
+    occupiedByEmployee,
+  };
+}
+
+export function objectiveComponents(
+  result: ReturnType<typeof allocatePortfolioWorkGreedy>,
+  input: PortfolioOptimizerInput,
+  includeResilienceProxy = true,
+  scoringContext?: ObjectiveScoringContext,
+) {
+  const context = scoringContext ?? createObjectiveScoringContext(input);
+  const { projectById, workPackageById } = context;
   const unplannedByPriority = [0, 0, 0, 0];
   let hardDeadlineExposureMinutes = 0;
   let softDeadlineExposureMinutes = 0;
@@ -613,15 +666,6 @@ export function objectiveComponents(
     };
   }
 
-  const horizonWeeks = Math.max(1, Math.ceil(input.end.diff(input.start, "weeks").weeks));
-  const occupiedByEmployee = new Map<number, number>();
-  for (const interval of input.occupiedIntervals) {
-    occupiedByEmployee.set(
-      interval.employeeId,
-      (occupiedByEmployee.get(interval.employeeId) ?? 0)
-        + Math.round((interval.endAt.getTime() - interval.startAt.getTime()) / 60_000),
-    );
-  }
   const totalAssignedByEmployee = new Map<number, number>();
   const demandBySkillEmployee = new Map<string, {
     skillId: number;
@@ -639,12 +683,12 @@ export function objectiveComponents(
       assignment.employeeId,
       (totalAssignedByEmployee.get(assignment.employeeId) ?? 0) + minutes,
     );
-    const qualified = input.employees.filter((employee) => employee.skills.some(
-      (skill) => skill.skillId === entry.workPackage.requiredSkillId
-        && skill.level >= entry.workPackage.minimumSkillLevel,
-    ));
+    const skillKey = skillRequirementKey(
+      entry.workPackage.requiredSkillId,
+      entry.workPackage.minimumSkillLevel,
+    );
+    const qualified = context.qualifiedEmployeesByRequirement.get(skillKey) ?? [];
     if (qualified.length <= 1) singlePointExposureMinutes += minutes;
-    const skillKey = `${entry.workPackage.requiredSkillId}:${entry.workPackage.minimumSkillLevel}`;
     const skillDemand = demandBySkillEmployee.get(skillKey) ?? {
       skillId: entry.workPackage.requiredSkillId,
       minimumSkillLevel: entry.workPackage.minimumSkillLevel,
@@ -670,16 +714,17 @@ export function objectiveComponents(
     }, 0);
     weightedConcentration += concentration * skillDemand;
     for (const [removedEmployeeId, removedMinutes] of byEmployee) {
-      const backupCapacity = input.employees.filter((employee) =>
-        employee.id !== removedEmployeeId
-        && employee.skills.some((skill) => skill.skillId === skillId
-          && skill.level >= minimumSkillLevel),
-      ).reduce((total, employee) => {
-        const horizonCapacity = employee.maxWeeklyMinutes * horizonWeeks;
-        const alreadyUsed = (occupiedByEmployee.get(employee.id) ?? 0)
-          + (totalAssignedByEmployee.get(employee.id) ?? 0);
-        return total + Math.max(0, horizonCapacity - alreadyUsed);
-      }, 0);
+      const backupCapacity = (
+        context.qualifiedEmployeesByRequirement.get(
+          skillRequirementKey(skillId, minimumSkillLevel),
+        ) ?? []
+      ).filter((employee) => employee.id !== removedEmployeeId)
+        .reduce((total, employee) => {
+          const horizonCapacity = employee.maxWeeklyMinutes * context.horizonWeeks;
+          const alreadyUsed = (context.occupiedByEmployee.get(employee.id) ?? 0)
+            + (totalAssignedByEmployee.get(employee.id) ?? 0);
+          return total + Math.max(0, horizonCapacity - alreadyUsed);
+        }, 0);
       maxRecoveryShortfallMinutes = Math.max(
         maxRecoveryShortfallMinutes,
         Math.max(0, removedMinutes - backupCapacity),

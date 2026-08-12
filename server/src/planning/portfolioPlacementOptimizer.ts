@@ -4,6 +4,7 @@ import { SCHEDULE_TIME_ZONE } from "../scheduling/timeAdapter.js";
 import {
   allocatePortfolioWorkV1,
   compareVectors,
+  createObjectiveScoringContext,
   freeSegments,
   localDateAtMinute,
   objectiveVector,
@@ -112,14 +113,63 @@ function clonePlacementState(state: PlacementState): PlacementState {
   return {
     assignments: [...state.assignments],
     unplannedWorkPackages: [...state.unplannedWorkPackages],
-    employeeOccupied: new Map(
-      [...state.employeeOccupied].map(([employeeId, intervals]) => [
-        employeeId,
-        [...intervals],
-      ]),
-    ),
+    // Interval arrays are immutable: reservePlacement replaces only the array
+    // for the modified employee, so sibling beam states can safely share the
+    // unchanged arrays.
+    employeeOccupied: new Map(state.employeeOccupied),
     weeklyMinutes: new Map(state.weeklyMinutes),
     packageFinish: new Map(state.packageFinish),
+  };
+}
+
+interface PlacementStaticIndex {
+  eligibleEmployeesByPackage: Map<
+    number,
+    PortfolioOptimizerInput["employees"]
+  >;
+  availabilityByEmployeeDay: Map<
+    string,
+    PortfolioOptimizerInput["employees"][number]["availability"]
+  >;
+  portfolioScale: number;
+}
+
+function placementStaticIndex(input: PortfolioOptimizerInput): PlacementStaticIndex {
+  const eligibleEmployeesByPackage = new Map<
+    number,
+    PortfolioOptimizerInput["employees"]
+  >();
+  for (const project of input.projects) {
+    for (const workPackage of project.workPackages) {
+      eligibleEmployeesByPackage.set(
+        workPackage.id,
+        input.employees.filter((employee) => employee.skills.some(
+          (skill) => skill.skillId === workPackage.requiredSkillId
+            && skill.level >= workPackage.minimumSkillLevel,
+        )),
+      );
+    }
+  }
+  const availabilityByEmployeeDay = new Map<
+    string,
+    PortfolioOptimizerInput["employees"][number]["availability"]
+  >();
+  for (const employee of input.employees) {
+    for (const availability of employee.availability) {
+      const key = `${employee.id}:${availability.dayOfWeek}`;
+      availabilityByEmployeeDay.set(key, [
+        ...(availabilityByEmployeeDay.get(key) ?? []),
+        availability,
+      ]);
+    }
+  }
+  return {
+    eligibleEmployeesByPackage,
+    availabilityByEmployeeDay,
+    portfolioScale: input.employees.length * input.projects.reduce(
+      (total, project) => total + project.workPackages.length,
+      0,
+    ),
   };
 }
 
@@ -189,6 +239,7 @@ function packageEarliest(
 
 function placementCandidates(
   input: PortfolioOptimizerInput,
+  staticIndex: PlacementStaticIndex,
   state: PlacementState,
   project: OptimizerProject,
   workPackage: OptimizerWorkPackage,
@@ -196,15 +247,11 @@ function placementCandidates(
   remaining: number,
   packageIntervals: Interval[],
 ) {
-  const portfolioScale = input.employees.length * input.projects.reduce(
-    (total, candidateProject) => total + candidateProject.workPackages.length,
-    0,
-  );
   const profiles = searchProfiles(input);
   const lookaheadDays = input.comparisonProfiles?.length
     ? PLACEMENT_LOOKAHEAD_DAYS
     : (input.planningProfile ?? "BALANCED") === "COST_FIRST"
-      && portfolioScale <= 40
+      && staticIndex.portfolioScale <= 40
       ? PLACEMENT_LOOKAHEAD_DAYS
       : 1;
   const collected = [] as Array<{
@@ -229,23 +276,18 @@ function placementCandidates(
     ) return [];
     const dayName = day.toFormat("cccc").toUpperCase();
     const earliestDate = earliest.toUTC().toJSDate();
-    const candidates = input.employees.flatMap((employee) => {
-      const qualified = employee.skills.some(
-        (skill) => skill.skillId === workPackage.requiredSkillId
-          && skill.level >= workPackage.minimumSkillLevel,
-      );
-      if (!qualified) return [];
-      return employee.availability
-        .filter((availability) => availability.dayOfWeek === dayName)
-        .flatMap((availability) => {
+    const candidates = (staticIndex.eligibleEmployeesByPackage.get(workPackage.id) ?? [])
+      .flatMap((employee) => (
+        staticIndex.availabilityByEmployeeDay.get(`${employee.id}:${dayName}`) ?? []
+      ).flatMap((availability) => {
           const window = {
             startAt: localDateAtMinute(day, availability.startMinute),
             endAt: localDateAtMinute(day, availability.endMinute),
           };
           return freeSegments(window, state.employeeOccupied.get(employee.id) ?? [])
             .map((segment) => ({ employee, segment }));
-        });
-    }).filter(({ segment }) => segment.endAt > earliestDate)
+        }))
+      .filter(({ segment }) => segment.endAt > earliestDate)
       .map(({ employee, segment }) => ({
         employee,
         segment: {
@@ -335,16 +377,6 @@ function placementCandidates(
   return union;
 }
 
-function variantVector(variant: PackageVariant, input: PortfolioOptimizerInput) {
-  return [
-    variant.remaining,
-    ...objectiveVector({
-      assignments: variant.state.assignments,
-      unplannedWorkPackages: variant.state.unplannedWorkPackages,
-    }, input),
-  ];
-}
-
 function placementSignature(state: Pick<PlacementState, "assignments">) {
   return state.assignments.map((assignment) => [
     assignment.workPackageId,
@@ -391,12 +423,19 @@ interface ComparisonScoreCache {
 
 function comparisonScoreCache(input: PortfolioOptimizerInput): ComparisonScoreCache {
   const scores = new Map<string, ComparisonScore>();
+  const scoringContext = createObjectiveScoringContext(input);
+  const includeResilienceProxy = searchProfiles(input).includes("RESILIENCE_FIRST");
   return {
     score(result) {
       const signature = planSignature(result);
       const cached = scores.get(signature);
       if (cached) return cached;
-      const components = objectiveComponents(result, input);
+      const components = objectiveComponents(
+        result,
+        input,
+        includeResilienceProxy,
+        scoringContext,
+      );
       const score = {
         signature,
         components,
@@ -416,7 +455,10 @@ function profileVector(score: ComparisonScore, profile: PlanningProfile) {
   return vector;
 }
 
-function commonParetoVector(components: ReturnType<typeof objectiveComponents>) {
+function commonParetoVector(
+  components: ReturnType<typeof objectiveComponents>,
+  includeResilienceProxy: boolean,
+) {
   return [
     components.criticalUnplannedMinutes,
     components.highUnplannedMinutes,
@@ -426,9 +468,11 @@ function commonParetoVector(components: ReturnType<typeof objectiveComponents>) 
     components.softDeadlineExposureMinutes,
     components.overtimeMinutes,
     components.laborCostCents,
-    components.singlePointExposureMinutes,
-    components.maxRecoveryShortfallMinutes,
-    components.skillConcentrationBasisPoints,
+    ...(includeResilienceProxy ? [
+      components.singlePointExposureMinutes,
+      components.maxRecoveryShortfallMinutes,
+      components.skillConcentrationBasisPoints,
+    ] : []),
     components.imbalanceBasisPoints,
   ];
 }
@@ -492,6 +536,7 @@ function prunePlacementStates(
   }
   const unique = [...dominantBySignature.values()];
   const profiles = searchProfiles(input);
+  const includeResilienceProxy = profiles.includes("RESILIENCE_FIRST");
   if (profiles.length > 1) {
     const activeScoreCache = scoreCache ?? comparisonScoreCache(input);
     const scores = new Map(unique.map((state) => {
@@ -503,7 +548,7 @@ function prunePlacementStates(
     }));
     const paretoVectors = new Map(unique.map((state) => [
       state,
-      commonParetoVector(scores.get(state)!.components),
+      commonParetoVector(scores.get(state)!.components, includeResilienceProxy),
     ]));
     const frontier = unique.filter((candidate) => !unique.some((other) =>
       other !== candidate && dominates(
@@ -522,13 +567,15 @@ function prunePlacementStates(
     stats.prunedStates += Math.max(0, frontier.length - selected.length);
     return selected;
   }
+  const activeScoreCache = scoreCache ?? comparisonScoreCache(input);
+  const profile = profiles[0]!;
   const scored = unique.map((state) => ({
     state,
-    signature: placementSignature(state),
-    vector: objectiveVector({
-      assignments: state.assignments,
-      unplannedWorkPackages: state.unplannedWorkPackages,
-    }, input),
+    score: activeScoreCache.score(state),
+  })).map(({ state, score }) => ({
+    state,
+    signature: score.signature,
+    vector: profileVector(score, profile),
   })).sort((first, second) =>
     compareVectors(first.vector, second.vector)
       || compareSignatures(first.signature, second.signature),
@@ -546,16 +593,23 @@ function prunePackageVariants(
 ) {
   const profiles = searchProfiles(input);
   if (profiles.length === 1) {
-    variants.sort((first, second) =>
-      compareVectors(variantVector(first, input), variantVector(second, input))
-      || compareSignatures(
-        placementSignature(first.state),
-        placementSignature(second.state),
-      ),
+    const activeScoreCache = scoreCache ?? comparisonScoreCache(input);
+    const profile = profiles[0]!;
+    const scored = variants.map((variant) => {
+      const score = activeScoreCache.score(variant.state);
+      return {
+        variant,
+        signature: `${variant.remaining}:${score.signature}`,
+        vector: [variant.remaining, ...profileVector(score, profile)],
+      };
+    }).sort((first, second) =>
+      compareVectors(first.vector, second.vector)
+        || compareSignatures(first.signature, second.signature),
     );
     stats.prunedStates += Math.max(0, variants.length - width);
-    return variants.slice(0, width);
+    return scored.slice(0, width).map((item) => item.variant);
   }
+  const includeResilienceProxy = profiles.includes("RESILIENCE_FIRST");
   const activeScoreCache = scoreCache ?? comparisonScoreCache(input);
   const scores = new Map(variants.map((variant) => {
     const result = {
@@ -566,7 +620,13 @@ function prunePackageVariants(
   }));
   const paretoVectors = new Map(variants.map((variant) => [
     variant,
-    [variant.remaining, ...commonParetoVector(scores.get(variant)!.components)],
+    [
+      variant.remaining,
+      ...commonParetoVector(
+        scores.get(variant)!.components,
+        includeResilienceProxy,
+      ),
+    ],
   ]));
   const frontier = variants.filter((candidate) => !variants.some((other) =>
     other !== candidate && dominates(
@@ -591,6 +651,7 @@ function prunePackageVariants(
 
 function schedulePackageVariants(
   input: PortfolioOptimizerInput,
+  staticIndex: PlacementStaticIndex,
   baseState: PlacementState,
   entry: PackageEntry,
   stats: PlacementSearchStats,
@@ -660,6 +721,7 @@ function schedulePackageVariants(
       }
       const candidates = placementCandidates(
         input,
+        staticIndex,
         variant.state,
         project,
         workPackage,
@@ -764,6 +826,7 @@ function schedulePackageVariants(
 
 function placementSearchForOrder(
   input: PortfolioOptimizerInput,
+  staticIndex: PlacementStaticIndex,
   order: PackageEntry[],
   stats: PlacementSearchStats,
   scoreCache?: ComparisonScoreCache,
@@ -772,7 +835,7 @@ function placementSearchForOrder(
   let beam = [initialPlacementState(input)];
   for (const entry of order) {
     const expanded = beam.flatMap((state) =>
-      schedulePackageVariants(input, state, entry, stats, scoreCache),
+      schedulePackageVariants(input, staticIndex, state, entry, stats, scoreCache),
     );
     beam = prunePlacementStates(expanded, input, limits.beamWidth, stats, scoreCache);
   }
@@ -799,11 +862,22 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
   let bestVector = objectiveVector(best, input);
   let evaluatedPlans = 1;
   const limits = placementLimits(input);
+  const staticIndex = placementStaticIndex(input);
+  const scoreCache = comparisonScoreCache(input);
   const orders = [...orderSearch.uniqueOrders.values()].slice(0, limits.orderLimit);
   for (const order of orders) {
-    for (const candidate of placementSearchForOrder(input, order, stats)) {
+    for (const candidate of placementSearchForOrder(
+      input,
+      staticIndex,
+      order,
+      stats,
+      scoreCache,
+    )) {
       evaluatedPlans += 1;
-      const vector = objectiveVector(candidate, input);
+      const vector = profileVector(
+        scoreCache.score(candidate),
+        input.planningProfile ?? "BALANCED",
+      );
       if (compareVectors(vector, bestVector) < 0) {
         best = candidate;
         bestVector = vector;
@@ -880,6 +954,7 @@ export function allocatePortfolioScenarioPlans(
     searchLimitReached: false,
   };
   const limits = placementLimits(sharedInput);
+  const staticIndex = placementStaticIndex(sharedInput);
   const scoreCache = comparisonScoreCache(sharedInput);
   const candidateBySignature = new Map<string, {
     assignments: PlanAssignment[];
@@ -894,7 +969,13 @@ export function allocatePortfolioScenarioPlans(
   }
   const orders = [...orderSearch.uniqueOrders.values()].slice(0, limits.orderLimit);
   for (const order of orders) {
-    for (const candidate of placementSearchForOrder(sharedInput, order, stats, scoreCache)) {
+    for (const candidate of placementSearchForOrder(
+      sharedInput,
+      staticIndex,
+      order,
+      stats,
+      scoreCache,
+    )) {
       candidateBySignature.set(planSignature(candidate), candidate);
     }
     if (stats.searchLimitReached) break;
