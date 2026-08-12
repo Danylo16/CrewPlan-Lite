@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { z } from "zod";
 import { Prisma } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
@@ -8,6 +8,11 @@ import {
 } from "../planning/portfolioPlan.js";
 import { buildPortfolioResilienceReport } from "../planning/portfolioResilience.js";
 import { getWeekWindowUtc, parseWeekStart } from "../scheduling/timeAdapter.js";
+import {
+  preventDecisionCaching,
+  recordServerTiming,
+  type ServerTimingMetric,
+} from "../lib/httpObservability.js";
 
 export const portfolioPlanRouter = Router();
 
@@ -38,40 +43,87 @@ function planningError(error: unknown, response: Parameters<Parameters<typeof po
   throw error;
 }
 
+function finishPlanningResponse(
+  response: Response,
+  operation: string,
+  startedAt: number,
+  metrics: ServerTimingMetric[] = [],
+) {
+  preventDecisionCaching(response);
+  recordServerTiming(response, operation, startedAt, metrics);
+}
+
+function stalePreviewResponse(
+  response: Response,
+  operation: string,
+  startedAt: number,
+) {
+  response.status(409);
+  response.setHeader("X-CrewPlan-Recovery", "regenerate-preview");
+  finishPlanningResponse(response, operation, startedAt);
+  return response.json({
+    code: "PORTFOLIO_PREVIEW_STALE",
+    message: "Portfolio data changed after preview; generate a new preview",
+    retryable: true,
+    recovery: "REGENERATE_PREVIEW",
+  });
+}
+
 portfolioPlanRouter.post("/preview", async (request, response) => {
+  const startedAt = performance.now();
   const result = requestSchema.safeParse(request.body);
   if (!result.success) return response.status(400).json({ code: "VALIDATION_ERROR", message: "Invalid portfolio plan request", errors: result.error.issues });
   try {
-    return response.json(await buildPortfolioPlanPreview(prisma, result.data));
+    const preview = await buildPortfolioPlanPreview(prisma, result.data);
+    finishPlanningResponse(response, "preview", startedAt, [{
+      name: "optimizer",
+      durationMs: preview.optimizerDiagnostics.runtimeMs,
+    }]);
+    return response.json(preview);
   } catch (error) {
     return planningError(error, response);
   }
 });
 
 portfolioPlanRouter.post("/scenarios", async (request, response) => {
+  const startedAt = performance.now();
   const result = requestSchema.omit({ planningProfile: true }).safeParse(request.body);
   if (!result.success) return response.status(400).json({ code: "VALIDATION_ERROR", message: "Invalid scenario comparison request", errors: result.error.issues });
   try {
-    return response.json(await buildPortfolioScenarioComparison(prisma, result.data));
+    const comparison = await buildPortfolioScenarioComparison(prisma, result.data);
+    finishPlanningResponse(response, "scenarios", startedAt, [
+      { name: "pre_optimizer", durationMs: comparison.runtimeBreakdown.preOptimizerMs },
+      { name: "optimizer", durationMs: comparison.runtimeBreakdown.optimizerMs },
+      { name: "post_optimizer", durationMs: comparison.runtimeBreakdown.postOptimizerMs },
+    ]);
+    return response.json(comparison);
   } catch (error) {
     return planningError(error, response);
   }
 });
 
 portfolioPlanRouter.post("/resilience", async (request, response) => {
+  const startedAt = performance.now();
   const result = resilienceSchema.safeParse(request.body);
   if (!result.success) return response.status(400).json({ code: "VALIDATION_ERROR", message: "Invalid resilience request", errors: result.error.issues });
   try {
-    return response.json(await buildPortfolioResilienceReport(prisma, result.data));
+    const resilience = await buildPortfolioResilienceReport(prisma, result.data);
+    finishPlanningResponse(response, "resilience", startedAt, [
+      { name: "baseline", durationMs: resilience.runtimeBreakdown.baselineMs },
+      { name: "preparation", durationMs: resilience.runtimeBreakdown.preparationMs },
+      { name: "repair", durationMs: resilience.runtimeBreakdown.repairMs },
+    ]);
+    return response.json(resilience);
   } catch (error) {
     if (error instanceof Error && error.message === "PORTFOLIO_PREVIEW_STALE") {
-      return response.status(409).json({ code: error.message, message: "Portfolio data changed after preview; generate a new preview" });
+      return stalePreviewResponse(response, "resilience", startedAt);
     }
     return planningError(error, response);
   }
 });
 
 portfolioPlanRouter.post("/apply", async (request, response) => {
+  const startedAt = performance.now();
   const result = applySchema.safeParse(request.body);
   if (!result.success) return response.status(400).json({ code: "VALIDATION_ERROR", message: "Invalid portfolio plan apply request", errors: result.error.issues });
   try {
@@ -150,10 +202,12 @@ portfolioPlanRouter.post("/apply", async (request, response) => {
       maxWait: 10_000,
       timeout: 30_000,
     });
-    return response.status(201).json(applied);
+    response.status(201);
+    finishPlanningResponse(response, "apply", startedAt);
+    return response.json(applied);
   } catch (error) {
     if (error instanceof Error && error.message === "PORTFOLIO_PREVIEW_STALE") {
-      return response.status(409).json({ code: error.message, message: "Portfolio data changed after preview; generate a new preview" });
+      return stalePreviewResponse(response, "apply", startedAt);
     }
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
       return response.status(409).json({ code: "PLANNING_CONCURRENT_MODIFICATION", message: "Portfolio changed concurrently; generate a new preview" });

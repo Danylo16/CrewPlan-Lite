@@ -45,6 +45,7 @@ const preview = {
     startAt: "2026-08-11T07:00:00.000Z",
     endAt: "2026-08-11T09:00:00.000Z",
   }],
+  optimizerDiagnostics: { runtimeMs: 12 },
   metrics: { proposedWorkMinutes: 240, proposedFixedCoverageMinutes: 120, plannedCostCents: 24_000, assignedWorkPackages: 1, unplannedWorkPackages: 0 },
 };
 
@@ -63,6 +64,11 @@ describe("portfolio planning API", () => {
       horizonWeeks: 2,
       replaceGenerated: true,
       runtimeMs: 20,
+      runtimeBreakdown: {
+        preOptimizerMs: 5,
+        optimizerMs: 12,
+        postOptimizerMs: 3,
+      },
       scenarios: [{ planningProfile: "BALANCED", plannedCostCents: 24_000 }],
     });
     resilienceMock.mockResolvedValue({
@@ -72,6 +78,11 @@ describe("portfolio planning API", () => {
       worstCaseCoveragePercent: 70,
       testedAbsences: 5,
       recoverableAbsences: 4,
+      runtimeBreakdown: {
+        baselineMs: 10,
+        preparationMs: 2,
+        repairMs: 8,
+      },
       scenarios: [],
     });
   });
@@ -94,6 +105,8 @@ describe("portfolio planning API", () => {
       planningProfile: "BALANCED",
     });
     expect(response.body.createdShifts).toBe(2);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["server-timing"]).toMatch(/^total;dur=/);
     expect(prismaMock.shift.deleteMany).toHaveBeenCalledWith({
       where: expect.objectContaining({ origin: "SOLVER", status: "COMMITTED" }),
     });
@@ -105,6 +118,22 @@ describe("portfolio planning API", () => {
     });
   });
 
+  it("returns uncached preview timing and a request correlation ID", async () => {
+    const response = await request(app).post("/api/portfolio-plan/preview").send({
+      horizonStart: "2026-08-10",
+      horizonWeeks: 2,
+      replaceGenerated: true,
+      planningProfile: "BALANCED",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["x-request-id"]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(response.headers["server-timing"]).toContain("optimizer;dur=12.0");
+  });
+
   it("compares every planning profile without applying a plan", async () => {
     const response = await request(app).post("/api/portfolio-plan/scenarios").send({
       horizonStart: "2026-08-10",
@@ -114,6 +143,9 @@ describe("portfolio planning API", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.scenarios).toHaveLength(1);
+    expect(response.headers["server-timing"]).toContain("pre_optimizer;dur=5.0");
+    expect(response.headers["server-timing"]).toContain("optimizer;dur=12.0");
+    expect(response.headers["server-timing"]).toContain("post_optimizer;dur=3.0");
     expect(scenariosMock).toHaveBeenCalledWith(prismaMock, {
       horizonStart: "2026-08-10",
       horizonWeeks: 2,
@@ -135,6 +167,12 @@ describe("portfolio planning API", () => {
 
     expect(response.status).toBe(409);
     expect(response.body.code).toBe("PORTFOLIO_PREVIEW_STALE");
+    expect(response.body).toMatchObject({
+      retryable: true,
+      recovery: "REGENERATE_PREVIEW",
+    });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["x-crewplan-recovery"]).toBe("regenerate-preview");
     expect(prismaMock.shift.deleteMany).not.toHaveBeenCalled();
   });
 
@@ -150,6 +188,9 @@ describe("portfolio planning API", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.scorePercent).toBe(82);
+    expect(response.headers["server-timing"]).toContain("baseline;dur=10.0");
+    expect(response.headers["server-timing"]).toContain("preparation;dur=2.0");
+    expect(response.headers["server-timing"]).toContain("repair;dur=8.0");
     expect(resilienceMock).toHaveBeenCalledWith(prismaMock, {
       horizonStart: "2026-08-10",
       horizonWeeks: 2,
@@ -158,5 +199,26 @@ describe("portfolio planning API", () => {
       inputVersion: version,
       planningProfile: "BALANCED",
     });
+  });
+
+  it("returns a retry contract when resilience input is stale", async () => {
+    resilienceMock.mockRejectedValue(new Error("PORTFOLIO_PREVIEW_STALE"));
+
+    const response = await request(app).post("/api/portfolio-plan/resilience").send({
+      horizonStart: "2026-08-10",
+      horizonWeeks: 2,
+      replaceGenerated: true,
+      previewId: hash,
+      inputVersion: version,
+      planningProfile: "BALANCED",
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      code: "PORTFOLIO_PREVIEW_STALE",
+      retryable: true,
+      recovery: "REGENERATE_PREVIEW",
+    });
+    expect(response.headers["server-timing"]).toMatch(/^total;dur=/);
   });
 });
