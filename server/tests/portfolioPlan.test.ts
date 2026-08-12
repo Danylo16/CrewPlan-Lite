@@ -103,6 +103,60 @@ function database(
 }
 
 describe("multi-week portfolio planner", () => {
+  it("starts portfolio reads while fixed coverage is still loading", async () => {
+    const planningDatabase = database([project()]);
+    let releaseFixedPreview!: (value: Awaited<ReturnType<typeof buildSchedulePreview>>) => void;
+    const fixedPreviewRunner = vi.fn(() => new Promise<Awaited<ReturnType<typeof buildSchedulePreview>>>(
+      (resolve) => { releaseFixedPreview = resolve; },
+    ));
+
+    const previewPromise = buildPortfolioPlanPreview(planningDatabase, {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 1,
+      replaceGenerated: true,
+      fixedPreviewRunner,
+    });
+
+    await vi.waitFor(() => {
+      expect(planningDatabase.project.findMany).toHaveBeenCalledTimes(1);
+      expect(planningDatabase.shift.findMany).toHaveBeenCalledTimes(2);
+    });
+    releaseFixedPreview({
+      weekStart: "2026-08-10",
+      inputVersion: "fixed-snapshot",
+      assignments: [],
+      unfilledRequirements: [],
+      metrics: { requestedPositions: 0, assignedPositions: 0 },
+    } as Awaited<ReturnType<typeof buildSchedulePreview>>);
+
+    const preview = await previewPromise;
+    expect(preview.metrics.proposedWorkMinutes).toBe(480);
+  });
+
+  it("keeps direct preview reads behind the fixed-coverage pool wave", async () => {
+    const planningDatabase = database([project()]);
+    let releaseRequirements!: (value: []) => void;
+    planningDatabase.projectRequirement.findMany.mockReturnValue(new Promise<[]>(
+      (resolve) => { releaseRequirements = resolve; },
+    ));
+
+    const previewPromise = buildPortfolioPlanPreview(planningDatabase, {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 1,
+      replaceGenerated: true,
+    });
+
+    await vi.waitFor(() => {
+      expect(planningDatabase.projectRequirement.findMany).toHaveBeenCalledTimes(1);
+    });
+    expect(planningDatabase.project.findMany).not.toHaveBeenCalled();
+
+    releaseRequirements([]);
+    const preview = await previewPromise;
+    expect(planningDatabase.project.findMany).toHaveBeenCalledTimes(1);
+    expect(preview.metrics.proposedWorkMinutes).toBe(480);
+  });
+
   it("compares all profiles against one memoized database snapshot", async () => {
     const planningDatabase = database([project()]);
     const fixedPreviewRunner = vi.fn(buildSchedulePreview);
@@ -133,7 +187,7 @@ describe("multi-week portfolio planner", () => {
       (scenario) => scenario.exploredStates
         === scenario.orderExploredStates + scenario.placementExploredStates,
     )).toBe(true);
-    expect(planningDatabase.employee.findMany).toHaveBeenCalledTimes(2);
+    expect(planningDatabase.employee.findMany).toHaveBeenCalledTimes(1);
     expect(planningDatabase.project.findMany).toHaveBeenCalledTimes(1);
     expect(planningDatabase.projectRequirement.findMany).toHaveBeenCalledTimes(1);
     expect(planningDatabase.shift.findMany).toHaveBeenCalledTimes(2);
@@ -149,7 +203,7 @@ describe("multi-week portfolio planner", () => {
     });
 
     expect(comparison.scenarios).toHaveLength(4);
-    expect(planningDatabase.employee.findMany).toHaveBeenCalledTimes(2);
+    expect(planningDatabase.employee.findMany).toHaveBeenCalledTimes(1);
     expect(planningDatabase.project.findMany).toHaveBeenCalledTimes(1);
     expect(planningDatabase.projectRequirement.findMany).toHaveBeenCalledTimes(1);
     expect(planningDatabase.shift.findMany).toHaveBeenCalledTimes(2);

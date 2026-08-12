@@ -4,6 +4,7 @@ import type { Prisma } from "../generated/prisma/client.js";
 import {
   buildSchedulePreview,
   buildSchedulePreviews,
+  MAX_SCHEDULING_EMPLOYEES,
 } from "../scheduling/schedulePreview.js";
 import { allocationCostBreakdown } from "../scheduling/scoring.js";
 import {
@@ -279,21 +280,21 @@ export async function buildPortfolioPlanPreview(
     { length: options.horizonWeeks },
     (_, index) => start.plus({ weeks: index }).toISODate()!,
   );
-  const fixedPreviews = options.fixedPreviewRunner
-    ? await Promise.all(weekStarts.map((weekStart) => options.fixedPreviewRunner!(
+  const fixedPreviewsPromise = options.fixedPreviewRunner
+    ? Promise.all(weekStarts.map((weekStart) => options.fixedPreviewRunner!(
       database,
       weekStart,
       options.replaceGenerated,
       options.excludedEmployeeIds ?? [],
     )))
-    : await buildSchedulePreviews(
+    : buildSchedulePreviews(
       database,
       weekStarts,
       options.replaceGenerated,
       options.excludedEmployeeIds ?? [],
     );
 
-  const [employees, projects, horizonShifts, futureWorkPackageShifts] = await Promise.all([
+  const loadPortfolioInputs = () => Promise.all([
     database.employee.findMany({
       where: {
         archivedAt: null,
@@ -301,6 +302,7 @@ export async function buildPortfolioPlanPreview(
           ? { id: { notIn: options.excludedEmployeeIds } }
           : {}),
       },
+      take: MAX_SCHEDULING_EMPLOYEES + 1,
       include: { skills: true, availability: true },
       orderBy: { id: "asc" },
     }),
@@ -325,6 +327,10 @@ export async function buildPortfolioPlanPreview(
       orderBy: { id: "asc" },
     }),
   ]);
+  const [fixedPreviews, portfolioInputs] = options.fixedPreviewRunner
+    ? await Promise.all([fixedPreviewsPromise, loadPortfolioInputs()])
+    : [await fixedPreviewsPromise, await loadPortfolioInputs()];
+  const [employees, projects, horizonShifts, futureWorkPackageShifts] = portfolioInputs;
 
   const workPackages = projects.flatMap((project) => project.workPackages.map((workPackage) => ({ project, workPackage })));
   if (workPackages.length > MAX_WORK_PACKAGES) throw new Error("PLANNING_INPUT_TOO_LARGE");
