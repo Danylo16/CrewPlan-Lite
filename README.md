@@ -282,17 +282,19 @@ Tests and production builds are also executed automatically by GitHub Actions on
 
 ## Reproducible portfolio evidence
 
-After loading the V2 demo dataset and starting the API, generate the article
-evidence bundle with:
+After loading both demo seeds into a clean, dedicated benchmark database and
+starting the API against it, generate the controlled article evidence bundle
+with:
 
 ```bash
 cd server
-yarn evidence:portfolio
+yarn evidence:portfolio --mode=controlled-v2
 ```
 
 The command runs the same Compare strategies request at least five times,
-computes min/p50/p95/max timing, verifies deterministic signatures and the
-cost/deadline and cost/resilience trade-offs, performs full review and N−1
+computes min/p50/p95/max timing, verifies deterministic signatures, the
+canonical V2 outcome and its cost/deadline and cost/resilience trade-offs,
+performs full review and N−1
 analysis for Balanced and Resilience First, and writes JSON plus Markdown under
 `artifacts/`. It exits with a failure code when an acceptance gate fails. See
 [`docs/portfolio-evidence.md`](docs/portfolio-evidence.md) for parameters and

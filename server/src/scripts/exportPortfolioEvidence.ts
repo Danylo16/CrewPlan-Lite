@@ -4,6 +4,14 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 
 type PlanningProfile = "BALANCED" | "COST_FIRST" | "DEADLINE_FIRST" | "RESILIENCE_FIRST";
+type EvidenceMode = "controlled-v2" | "production-observation";
+
+const CONTROLLED_V2_CONTRACT = {
+  BALANCED: { workPackageCostCents: 1_271_400, softDeadlineExposureMinutes: 0, skillConcentrationBasisPoints: 7_771 },
+  COST_FIRST: { workPackageCostCents: 1_249_800, softDeadlineExposureMinutes: 480, skillConcentrationBasisPoints: 7_771 },
+  DEADLINE_FIRST: { workPackageCostCents: 1_271_400, softDeadlineExposureMinutes: 0, skillConcentrationBasisPoints: 7_771 },
+  RESILIENCE_FIRST: { workPackageCostCents: 1_414_600, softDeadlineExposureMinutes: 0, skillConcentrationBasisPoints: 5_029 },
+} as const;
 
 interface Scenario {
   planningProfile: PlanningProfile;
@@ -101,11 +109,20 @@ function positiveInteger(value: string | undefined, fallback: number, name: stri
   return parsed;
 }
 
+function evidenceMode(value: string | undefined): EvidenceMode {
+  const mode = value ?? "controlled-v2";
+  if (mode !== "controlled-v2" && mode !== "production-observation") {
+    throw new Error("mode must be controlled-v2 or production-observation");
+  }
+  return mode;
+}
+
 const apiUrl = (argument("api") ?? process.env.CREWPLAN_API_URL ?? "http://localhost:3000/api")
   .replace(/\/$/, "");
 const horizonStart = argument("horizon-start") ?? process.env.EVIDENCE_HORIZON_START ?? "2026-08-17";
 const horizonWeeks = positiveInteger(argument("horizon-weeks") ?? process.env.EVIDENCE_HORIZON_WEEKS, 6, "horizon-weeks");
 const repeats = positiveInteger(argument("repeats") ?? process.env.EVIDENCE_REPEATS, 5, "repeats");
+const mode = evidenceMode(argument("mode") ?? process.env.EVIDENCE_MODE);
 const outputDirectory = path.resolve(
   argument("output") ?? process.env.EVIDENCE_OUTPUT_DIR ?? path.join(process.cwd(), "..", "artifacts"),
 );
@@ -182,6 +199,33 @@ function scenarioByProfile(comparison: Comparison, profile: PlanningProfile) {
   return scenario;
 }
 
+function matchesControlledV2(comparison: Comparison) {
+  return (Object.entries(CONTROLLED_V2_CONTRACT) as Array<[
+    PlanningProfile,
+    (typeof CONTROLLED_V2_CONTRACT)[PlanningProfile],
+  ]>).every(([profile, expected]) => {
+    const actual = scenarioByProfile(comparison, profile);
+    return actual.proposedWorkMinutes === 16_860
+      && actual.unplannedMinutes === 0
+      && actual.workPackageCostCents === expected.workPackageCostCents
+      && actual.softDeadlineExposureMinutes === expected.softDeadlineExposureMinutes
+      && actual.skillConcentrationBasisPoints === expected.skillConcentrationBasisPoints
+      && actual.candidateCount === 11
+      && !actual.searchLimitReached;
+  });
+}
+
+function controlledV2Mismatch(comparison: Comparison) {
+  return comparison.scenarios.map((scenario) => ({
+    planningProfile: scenario.planningProfile,
+    proposedWorkMinutes: scenario.proposedWorkMinutes,
+    workPackageCostCents: scenario.workPackageCostCents,
+    softDeadlineExposureMinutes: scenario.softDeadlineExposureMinutes,
+    skillConcentrationBasisPoints: scenario.skillConcentrationBasisPoints,
+    candidateCount: scenario.candidateCount,
+  }));
+}
+
 function reviewSummary(response: TimedResponse<Preview>) {
   const preview = response.body;
   return {
@@ -222,6 +266,7 @@ function markdown(report: EvidenceReport) {
 - Generated: ${report.generatedAt}
 - API: ${report.source.apiUrl}
 - Commit: ${report.source.commit}
+- Mode: ${report.source.mode}
 - Dataset: ${report.source.dataset}
 - Horizon: ${report.source.horizonStart}, ${report.source.horizonWeeks} weeks
 - Result: **${report.passed ? "PASS" : "FAIL"}**
@@ -242,6 +287,14 @@ function markdown(report: EvidenceReport) {
 | Post-optimizer | ${report.compare.postOptimizerTiming.minMs} ms | ${report.compare.postOptimizerTiming.p50Ms} ms | ${report.compare.postOptimizerTiming.p95Ms} ms | ${report.compare.postOptimizerTiming.maxMs} ms |
 
 Deterministic signature: \`${report.compare.signature}\`
+
+## Observed decision trade-offs
+
+| Observation | Present |
+| --- | --- |
+| Cost vs deadline | ${report.observations.costDeadlineTradeoff ? "YES" : "NO"} |
+| Cost vs resilience | ${report.observations.costResilienceTradeoff ? "YES" : "NO"} |
+| Full-review resilience | ${report.observations.fullReviewResilienceTradeoff ? "YES" : "NO"} |
 
 ## Shared Pareto shortlist
 
@@ -270,13 +323,14 @@ ${gateRows}
 }
 
 interface EvidenceReport {
-  schemaVersion: "crewplan-portfolio-evidence-v1";
+  schemaVersion: "crewplan-portfolio-evidence-v2";
   generatedAt: string;
   source: {
     apiUrl: string;
     commit: string;
     environment: string;
-    dataset: "V2";
+    mode: EvidenceMode;
+    dataset: "V2" | "UNCONTROLLED_PRODUCTION";
     horizonStart: string;
     horizonWeeks: number;
     repeats: number;
@@ -315,14 +369,31 @@ interface EvidenceReport {
     requestId: string | null;
     report: ResilienceReport;
   }>;
+  observations: {
+    costDeadlineTradeoff: boolean;
+    costResilienceTradeoff: boolean;
+    fullReviewResilienceTradeoff: boolean;
+  };
   gates: Record<string, boolean>;
   passed: boolean;
 }
 
 async function main() {
   const version = await jsonRequest<{ commit: string; environment: string }>("/version");
-  const compareResponses: Array<TimedResponse<Comparison>> = [];
-  for (let run = 0; run < repeats; run += 1) {
+  const compareResponses: Array<TimedResponse<Comparison>> = [await jsonRequest<Comparison>("/portfolio-plan/scenarios", {
+    horizonStart,
+    horizonWeeks,
+    replaceGenerated: true,
+  })];
+  if (mode === "controlled-v2" && !matchesControlledV2(compareResponses[0]!.body)) {
+    throw new Error(
+      "The API does not expose the controlled V2 fixture. Refusing to label this run as V2. "
+      + "Use a clean benchmark database seeded with seed:demo and seed:optimizer-demo, "
+      + "or use --mode=production-observation for non-V2 production measurements.\n"
+      + JSON.stringify(controlledV2Mismatch(compareResponses[0]!.body), null, 2),
+    );
+  }
+  for (let run = 1; run < repeats; run += 1) {
     compareResponses.push(await jsonRequest<Comparison>("/portfolio-plan/scenarios", {
       horizonStart,
       horizonWeeks,
@@ -391,7 +462,17 @@ async function main() {
   const reviewedBalanced = fullReviews.find((item) => item.planningProfile === "BALANCED")!;
   const reviewedResilient = fullReviews.find((item) => item.planningProfile === "RESILIENCE_FIRST")!;
   const signatures = new Set(compareRuns.map((item) => item.signature));
-  const gates = {
+  const observations = {
+    costDeadlineTradeoff: cost.workPackageCostCents < deadline.workPackageCostCents
+      && cost.softDeadlineExposureMinutes > deadline.softDeadlineExposureMinutes,
+    costResilienceTradeoff: resilient.workPackageCostCents > balanced.workPackageCostCents
+      && resilient.skillConcentrationBasisPoints < balanced.skillConcentrationBasisPoints,
+    fullReviewResilienceTradeoff:
+      reviewedResilient.workPackageCostCents > reviewedBalanced.workPackageCostCents
+      && reviewedResilient.objectiveVector.skillConcentrationBasisPoints
+        < reviewedBalanced.objectiveVector.skillConcentrationBasisPoints,
+  };
+  const commonGates = {
     repeatCount: compareRuns.length >= 5,
     correctAlgorithmVersion: reference.scenarios.every(
       (scenario) => scenario.algorithmVersion === "portfolio-pareto-beam-v4",
@@ -401,31 +482,31 @@ async function main() {
     searchCompleted: reference.scenarios.every((scenario) => !scenario.searchLimitReached),
     fullCoverage: reference.scenarios.every((scenario) => scenario.unplannedMinutes === 0),
     candidatePoolPreserved: reference.scenarios.every((scenario) => scenario.candidateCount >= 2),
-    costDeadlineTradeoff: cost.workPackageCostCents < deadline.workPackageCostCents
-      && cost.softDeadlineExposureMinutes > deadline.softDeadlineExposureMinutes,
-    costResilienceTradeoff: resilient.workPackageCostCents > balanced.workPackageCostCents
-      && resilient.skillConcentrationBasisPoints < balanced.skillConcentrationBasisPoints,
     fullReviewsCompleted: fullReviews.every(
       (review) => !review.searchLimitReached && review.unplannedMinutes === 0,
     ),
-    fullReviewResilienceTradeoff:
-      reviewedResilient.workPackageCostCents > reviewedBalanced.workPackageCostCents
-      && reviewedResilient.objectiveVector.skillConcentrationBasisPoints
-        < reviewedBalanced.objectiveVector.skillConcentrationBasisPoints,
     nMinusOneRuntimeUnder20s: resilience.every((item) => item.report.runtimeMs < 20_000),
     nMinusOneAllEmployeesTested: resilience.every((item) => {
       const review = fullReviews.find((candidate) => candidate.planningProfile === item.planningProfile)!;
       return item.report.testedAbsences === review.resilienceCandidates;
     }),
   };
+  const gates = mode === "controlled-v2"
+    ? {
+        ...commonGates,
+        controlledV2Contract: matchesControlledV2(reference),
+        ...observations,
+      }
+    : commonGates;
   const report: EvidenceReport = {
-    schemaVersion: "crewplan-portfolio-evidence-v1",
+    schemaVersion: "crewplan-portfolio-evidence-v2",
     generatedAt: new Date().toISOString(),
     source: {
       apiUrl,
       commit: version.body.commit,
       environment: version.body.environment,
-      dataset: "V2",
+      mode,
+      dataset: mode === "controlled-v2" ? "V2" : "UNCONTROLLED_PRODUCTION",
       horizonStart,
       horizonWeeks,
       repeats,
@@ -443,6 +524,7 @@ async function main() {
     fullReviews,
     shortlistVsReview,
     resilience,
+    observations,
     gates,
     passed: Object.values(gates).every(Boolean),
   };
@@ -455,6 +537,7 @@ async function main() {
     writeFile(markdownPath, markdown(report), "utf8"),
   ]);
   console.table(compareRuns);
+  console.table(observations);
   console.table(gates);
   console.log(`Evidence JSON: ${jsonPath}`);
   console.log(`Evidence Markdown: ${markdownPath}`);
