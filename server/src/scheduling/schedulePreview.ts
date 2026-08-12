@@ -15,7 +15,7 @@ import type {
   SchedulingRequirement,
 } from "./types.js";
 
-const MAX_EMPLOYEES = 50;
+export const MAX_SCHEDULING_EMPLOYEES = 50;
 const MAX_REQUIREMENTS = 100;
 const MAX_STAFFING_POSITIONS = 300;
 
@@ -26,7 +26,7 @@ export type ScheduleDatabase = Pick<
 
 export class ScheduleInputTooLargeError extends Error {
   readonly limits = {
-    employees: MAX_EMPLOYEES,
+    employees: MAX_SCHEDULING_EMPLOYEES,
     requirements: MAX_REQUIREMENTS,
     staffingPositions: MAX_STAFFING_POSITIONS,
   };
@@ -173,7 +173,7 @@ function buildSchedulePreviewFromSnapshot(
   );
 
   if (
-    employees.length > MAX_EMPLOYEES
+    employees.length > MAX_SCHEDULING_EMPLOYEES
     || requirements.length > MAX_REQUIREMENTS
     || requestedPositions > MAX_STAFFING_POSITIONS
   ) {
@@ -349,7 +349,7 @@ export async function buildSchedulePreview(
           ? { id: { notIn: [...excludedEmployeeIds] } }
           : {}),
       },
-      take: MAX_EMPLOYEES + 1,
+      take: MAX_SCHEDULING_EMPLOYEES + 1,
       include: {
         skills: true,
         availability: true,
@@ -446,7 +446,7 @@ export async function buildSchedulePreviews(
           ? { id: { notIn: [...excludedEmployeeIds] } }
           : {}),
       },
-      take: MAX_EMPLOYEES + 1,
+      take: MAX_SCHEDULING_EMPLOYEES + 1,
       include: {
         skills: true,
         availability: true,
@@ -477,7 +477,7 @@ export async function buildSchedulePreviews(
     }),
   ]);
 
-  if (employees.length > MAX_EMPLOYEES) {
+  if (employees.length > MAX_SCHEDULING_EMPLOYEES) {
     throw new ScheduleInputTooLargeError();
   }
 
