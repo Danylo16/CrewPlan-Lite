@@ -28,8 +28,16 @@ const weekDays = [
   DayOfWeek.THURSDAY,
   DayOfWeek.FRIDAY,
 ];
-const nextMonday = DateTime.now().setZone(TIME_ZONE).plus({ weeks: 1 }).startOf("week");
-const dateAt = (weeks: number, days = 0) => nextMonday.plus({ weeks, days }).toUTC().toJSDate();
+const configuredHorizonStart = process.env.OPTIMIZER_DEMO_HORIZON_START;
+const horizonStart = configuredHorizonStart === undefined
+  ? DateTime.now().setZone(TIME_ZONE).plus({ weeks: 1 }).startOf("week")
+  : DateTime.fromISO(configuredHorizonStart, { zone: TIME_ZONE }).startOf("day");
+
+if (!horizonStart.isValid || horizonStart.weekday !== 1) {
+  throw new Error("OPTIMIZER_DEMO_HORIZON_START must be a valid ISO Monday, for example 2026-08-17");
+}
+
+const dateAt = (weeks: number, days = 0) => horizonStart.plus({ weeks, days }).toUTC().toJSDate();
 
 const skillNames = {
   flexible: `${DEMO_PREFIX} Flexible Delivery`,
@@ -274,7 +282,7 @@ const projectDefinitions: ProjectDefinition[] = [
 
 async function seedOptimizerDemo() {
   console.log(`Preparing optimizer demo on ${databaseHost}`);
-  console.log(`Rolling horizon starts ${nextMonday.toISODate()} (${TIME_ZONE})`);
+  console.log(`Rolling horizon starts ${horizonStart.toISODate()} (${TIME_ZONE})`);
 
   const summary = await prisma.$transaction(async (transaction: Prisma.TransactionClient) => {
     const existingDemoProjects = await transaction.project.findMany({
@@ -415,7 +423,7 @@ async function seedOptimizerDemo() {
 
     return {
       endpoint: databaseHost,
-      horizonStart: nextMonday.toISODate(),
+      horizonStart: horizonStart.toISODate(),
       employees: employeeDefinitions.length,
       skills: Object.keys(skillNames).length,
       projects: projectDefinitions.length,
