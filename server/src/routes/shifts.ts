@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { z } from "zod";
 import { Prisma } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
@@ -27,6 +27,14 @@ const shiftQuerySchema = z.object({
   from: z.string().datetime({ offset: true }).optional(),
   to: z.string().datetime({ offset: true }).optional(),
 });
+
+function plannerManagedShiftResponse(response: Response) {
+  return response.status(409).json({
+    code: "PLANNER_MANAGED_SHIFT",
+    message: "Generated allocations are immutable; replace them through Portfolio Planner",
+    recovery: "REGENERATE_AND_APPLY_PORTFOLIO_PLAN",
+  });
+}
 
 shiftRouter.get("/", async (request, response) => {
   const validationResult = shiftQuerySchema.safeParse(request.query);
@@ -202,17 +210,9 @@ shiftRouter.patch("/:id", async (request, response) => {
     });
   }
 
-  const [currentShift, employee, project] = await Promise.all([
-    prisma.shift.findUnique({
-      where: { id: shiftId },
-    }),
-    prisma.employee.findUnique({
-      where: { id: employeeId },
-    }),
-    prisma.project.findUnique({
-      where: { id: projectId },
-    }),
-  ]);
+  const currentShift = await prisma.shift.findUnique({
+    where: { id: shiftId },
+  });
 
   if (!currentShift) {
     return response.status(404).json({
@@ -220,6 +220,19 @@ shiftRouter.patch("/:id", async (request, response) => {
       message: "Shift does not exist",
     });
   }
+
+  if (currentShift.origin === "SOLVER" || currentShift.planningRunId) {
+    return plannerManagedShiftResponse(response);
+  }
+
+  const [employee, project] = await Promise.all([
+    prisma.employee.findUnique({
+      where: { id: employeeId },
+    }),
+    prisma.project.findUnique({
+      where: { id: projectId },
+    }),
+  ]);
 
   if (!employee) {
     return response.status(404).json({
@@ -311,6 +324,21 @@ shiftRouter.delete("/:id", async (request, response) => {
   }
 
   try {
+    const currentShift = await prisma.shift.findUnique({
+      where: { id: idResult.data },
+    });
+
+    if (!currentShift) {
+      return response.status(404).json({
+        code: "SHIFT_NOT_FOUND",
+        message: "Shift does not exist",
+      });
+    }
+
+    if (currentShift.origin === "SOLVER" || currentShift.planningRunId) {
+      return plannerManagedShiftResponse(response);
+    }
+
     await prisma.shift.delete({
       where: {
         id: idResult.data,

@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
-import { Prisma } from "../src/generated/prisma/client.js";
 
 const prismaMock = vi.hoisted(() => ({
   employee: {
@@ -453,6 +452,11 @@ describe("CrewPlan API", () => {
   });
 
   it("deletes an existing shift", async () => {
+    prismaMock.shift.findUnique.mockResolvedValue({
+      id: 11,
+      origin: "MANUAL",
+      planningRunId: null,
+    });
     prismaMock.shift.delete.mockResolvedValue({
       id: 11,
     });
@@ -470,20 +474,53 @@ describe("CrewPlan API", () => {
   });
 
   it("returns 404 when deleting a missing shift", async () => {
-    prismaMock.shift.delete.mockRejectedValue(
-      new Prisma.PrismaClientKnownRequestError(
-        "No record was found for deletion",
-        {
-          code: "P2025",
-          clientVersion: "6.19.3",
-        },
-      ),
-    );
+    prismaMock.shift.findUnique.mockResolvedValue(null);
 
     const response = await request(app).delete("/api/shifts/999");
 
     expect(response.status).toBe(404);
     expect(response.body.code).toBe("SHIFT_NOT_FOUND");
     expect(response.body.message).toBe("Shift does not exist");
+    expect(prismaMock.shift.delete).not.toHaveBeenCalled();
+  });
+
+  it("rejects direct edits to Portfolio Planner allocations", async () => {
+    prismaMock.shift.findUnique.mockResolvedValue({
+      id: 21,
+      origin: "SOLVER",
+      planningRunId: "11111111-1111-1111-1111-111111111111",
+    });
+
+    const response = await request(app)
+      .patch("/api/shifts/21")
+      .send({
+        employeeId: 1,
+        projectId: 2,
+        startAt: "2026-07-30T13:00:00.000Z",
+        endAt: "2026-07-30T17:00:00.000Z",
+      });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      code: "PLANNER_MANAGED_SHIFT",
+      recovery: "REGENERATE_AND_APPLY_PORTFOLIO_PLAN",
+    });
+    expect(prismaMock.shift.update).not.toHaveBeenCalled();
+    expect(prismaMock.employee.findUnique).not.toHaveBeenCalled();
+    expect(prismaMock.project.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("rejects direct deletion of Portfolio Planner allocations", async () => {
+    prismaMock.shift.findUnique.mockResolvedValue({
+      id: 21,
+      origin: "SOLVER",
+      planningRunId: "11111111-1111-1111-1111-111111111111",
+    });
+
+    const response = await request(app).delete("/api/shifts/21");
+
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("PLANNER_MANAGED_SHIFT");
+    expect(prismaMock.shift.delete).not.toHaveBeenCalled();
   });
 });

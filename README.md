@@ -25,7 +25,7 @@ CrewPlan combines project lifecycle, work-package dependencies, employee skills,
 - Fixed coverage for recurring time-specific staffing commitments
 - Weekly workforce calendar with week navigation
 - Employee profiles with skills, availability, capacity, cost and overtime
-- Create, edit, and delete shift assignments
+- Create, edit, and delete manual shift assignments; solver allocations remain planner-managed
 - Filter schedule by employee and project
 - Color-coded project assignments
 - Server-side conflict detection during shift creation and editing
@@ -117,9 +117,17 @@ DELETE /api/projects/:id
 
 ```http
 POST /api/portfolio-plan/preview
+POST /api/portfolio-plan/scenarios
+POST /api/portfolio-plan/resilience
 POST /api/portfolio-plan/apply
 GET  /api/portfolio-plan/runs
 ```
+
+Portfolio decision responses are marked `Cache-Control: no-store` and include
+`X-Request-Id` plus `Server-Timing` diagnostics. Apply and resilience requests
+revalidate the submitted `previewId` and `inputVersion`. A stale decision returns
+`409 PORTFOLIO_PREVIEW_STALE` with `recovery: REGENERATE_PREVIEW`; the frontend
+discards the obsolete preview instead of allowing it to be applied.
 
 ### Work packages and actual work
 
@@ -143,6 +151,10 @@ POST   /api/shifts
 PATCH  /api/shifts/:id
 DELETE /api/shifts/:id
 ```
+
+`PATCH` and `DELETE` reject solver-generated or planning-run shifts with
+`409 PLANNER_MANAGED_SHIFT`. Generated allocations must be replaced through the
+Portfolio Planner so a direct edit cannot invalidate the accepted plan.
 
 ### Public holidays
 

@@ -13,10 +13,19 @@ import {
 } from "./routes/workPackages.js";
 import { workLogRouter } from "./routes/workLogs.js";
 import { portfolioPlanRouter } from "./routes/portfolioPlan.js";
+import { requestObservability } from "./lib/httpObservability.js";
 
 export const app = express();
 
-app.use(cors());
+app.use(cors({
+  exposedHeaders: [
+    "Server-Timing",
+    "Timing-Allow-Origin",
+    "X-Request-Id",
+    "X-CrewPlan-Recovery",
+  ],
+}));
+app.use(requestObservability);
 app.use(express.json());
 
 app.use("/api/employees", employeeRouter);

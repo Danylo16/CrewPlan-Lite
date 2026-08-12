@@ -4,6 +4,26 @@ const API_URL =
 interface ApiError {
   code?: string;
   message?: string;
+  retryable?: boolean;
+  recovery?: string;
+}
+
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly code: string | undefined;
+  readonly retryable: boolean;
+  readonly recovery: string | undefined;
+  readonly requestId: string | null;
+
+  constructor(response: Response, error: ApiError) {
+    super(error.message ?? "Request failed");
+    this.name = "ApiRequestError";
+    this.status = response.status;
+    this.code = error.code;
+    this.retryable = error.retryable ?? false;
+    this.recovery = error.recovery;
+    this.requestId = response.headers.get("x-request-id");
+  }
 }
 
 async function responseBody(response: Response) {
@@ -33,7 +53,7 @@ export async function apiRequest<T>(
   if (!response.ok) {
     const error = (await responseBody(response)) as ApiError;
 
-    throw new Error(error.message ?? "Request failed");
+    throw new ApiRequestError(response, error);
   }
 
   if (response.status === 204) {

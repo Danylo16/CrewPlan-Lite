@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { apiRequest } from "../api/client";
+import { ApiRequestError, apiRequest } from "../api/client";
 import type {
   AppliedPortfolioPlan,
   PlanningProfile,
@@ -147,6 +147,20 @@ export function PlannerPage() {
     (scenario) => scenario.planningProfile === "BALANCED",
   );
 
+  function planningErrorMessage(error: unknown, fallback: string) {
+    if (
+      error instanceof ApiRequestError
+      && error.code === "PORTFOLIO_PREVIEW_STALE"
+      && error.recovery === "REGENERATE_PREVIEW"
+    ) {
+      setPreview(null);
+      setComparison(null);
+      setResilience(null);
+      return "Portfolio data changed. The stale decision was discarded; generate a new preview.";
+    }
+    return error instanceof Error ? error.message : fallback;
+  }
+
   async function generate(profile = planningProfile) {
     setIsGenerating(true);
     setError(null);
@@ -214,9 +228,7 @@ export function PlannerPage() {
       }));
     } catch (resilienceError) {
       setResilience(null);
-      setError(resilienceError instanceof Error
-        ? resilienceError.message
-        : "Resilience testing failed");
+      setError(planningErrorMessage(resilienceError, "Resilience testing failed"));
     } finally {
       setIsTestingResilience(false);
     }
@@ -234,7 +246,7 @@ export function PlannerPage() {
       setApplied(result);
       setPreview(null);
     } catch (applyError) {
-      setError(applyError instanceof Error ? applyError.message : "Could not apply plan");
+      setError(planningErrorMessage(applyError, "Could not apply plan"));
     } finally {
       setIsApplying(false);
     }
