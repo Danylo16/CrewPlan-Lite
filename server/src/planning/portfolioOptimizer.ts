@@ -112,6 +112,22 @@ export interface ObjectiveScoringContext {
   qualifiedEmployeesByRequirement: Map<string, OptimizerEmployee[]>;
   horizonWeeks: number;
   occupiedByEmployee: Map<number, number>;
+  budgetProjectIndex: Map<number, number>;
+  budgetProjects: Array<{
+    totalBudgetCents: number | null;
+    weeklyBudgetCents: number | null;
+    baselineTotalCostCents: number;
+    baselineWeeklyCostCents: Float64Array;
+  }>;
+  weekBoundaryMillis: number[];
+  deadlineEndMillisByPackageId: Map<number, number | null>;
+  horizonEndMillis: number;
+  skillScoreByPackageId: Map<number, {
+    key: string;
+    skillId: number;
+    minimumSkillLevel: number;
+    qualifiedEmployeeCount: number;
+  }>;
 }
 
 export interface UnplannedWorkPackage {
@@ -594,6 +610,15 @@ export function createObjectiveScoringContext(
       { project, workPackage },
     ] as const)),
   );
+  const deadlineEndMillisByPackageId = new Map(
+    [...workPackageById].map(([workPackageId, entry]) => {
+      const deadline = entry.workPackage.targetEndDate ?? entry.project.targetEndDate;
+      return [
+        workPackageId,
+        deadline === null ? null : scheduleDateEnd(deadline).toUTC().toMillis(),
+      ] as const;
+    }),
+  );
   const qualifiedEmployeesByRequirement = new Map<string, OptimizerEmployee[]>();
   for (const { workPackage } of workPackageById.values()) {
     const key = skillRequirementKey(
@@ -617,13 +642,83 @@ export function createObjectiveScoringContext(
         + Math.round((interval.endAt.getTime() - interval.startAt.getTime()) / 60_000),
     );
   }
+  const skillScoreByPackageId = new Map(
+    [...workPackageById].map(([workPackageId, { workPackage }]) => {
+      const key = skillRequirementKey(
+        workPackage.requiredSkillId,
+        workPackage.minimumSkillLevel,
+      );
+      return [workPackageId, {
+        key,
+        skillId: workPackage.requiredSkillId,
+        minimumSkillLevel: workPackage.minimumSkillLevel,
+        qualifiedEmployeeCount:
+          qualifiedEmployeesByRequirement.get(key)?.length ?? 0,
+      }] as const;
+    }),
+  );
+  const horizonWeeks = Math.max(
+    1,
+    Math.ceil(input.end.diff(input.start, "weeks").weeks),
+  );
+  const weekBoundaryMillis = Array.from(
+    { length: horizonWeeks + 1 },
+    (_, index) => input.start.plus({ weeks: index }).toUTC().toMillis(),
+  );
+  const weekIndexByKey = new Map(Array.from(
+    { length: horizonWeeks },
+    (_, index) => [input.start.plus({ weeks: index }).toISODate()!, index] as const,
+  ));
+  const budgetProjects: ObjectiveScoringContext["budgetProjects"] = [];
+  const budgetProjectIndex = new Map<number, number>();
+  for (const project of input.projects) {
+    if (
+      project.totalLaborBudgetCents === null
+      && project.weeklyLaborBudgetCents === null
+    ) continue;
+    const baseline = input.budgetBaselineByProject?.get(project.id);
+    const baselineWeeklyCostCents = new Float64Array(horizonWeeks);
+    for (const [key, costCents] of baseline?.committedWeeklyCostCents ?? []) {
+      const weekIndex = weekIndexByKey.get(key);
+      if (weekIndex !== undefined) baselineWeeklyCostCents[weekIndex] = costCents;
+    }
+    budgetProjectIndex.set(project.id, budgetProjects.length);
+    budgetProjects.push({
+      totalBudgetCents: project.totalLaborBudgetCents,
+      weeklyBudgetCents: project.weeklyLaborBudgetCents,
+      baselineTotalCostCents: (baseline?.actualCostCents ?? 0)
+        + (baseline?.committedCostCents ?? 0),
+      baselineWeeklyCostCents,
+    });
+  }
   return {
     projectById,
     workPackageById,
     qualifiedEmployeesByRequirement,
-    horizonWeeks: Math.max(1, Math.ceil(input.end.diff(input.start, "weeks").weeks)),
+    horizonWeeks,
     occupiedByEmployee,
+    budgetProjectIndex,
+    budgetProjects,
+    weekBoundaryMillis,
+    deadlineEndMillisByPackageId,
+    horizonEndMillis: input.end.toUTC().toMillis(),
+    skillScoreByPackageId,
   };
+}
+
+function scoringWeekIndex(timestamp: number, boundaries: number[]) {
+  if (timestamp < boundaries[0]! || timestamp >= boundaries.at(-1)!) return -1;
+  const nominalWeekMillis = 7 * 24 * 60 * 60 * 1_000;
+  let index = Math.min(
+    boundaries.length - 2,
+    Math.max(0, Math.floor((timestamp - boundaries[0]!) / nominalWeekMillis)),
+  );
+  while (index > 0 && timestamp < boundaries[index]!) index -= 1;
+  while (
+    index + 1 < boundaries.length - 1
+    && timestamp >= boundaries[index + 1]!
+  ) index += 1;
+  return index;
 }
 
 export function objectiveComponents(
@@ -640,9 +735,10 @@ export function objectiveComponents(
   for (const item of result.unplannedWorkPackages) {
     const project = projectById.get(item.projectId);
     unplannedByPriority[priorityRank(project?.priority ?? "NORMAL")]! += item.unplannedMinutes;
-    const entry = workPackageById.get(item.workPackageId);
-    const deadline = entry?.workPackage.targetEndDate ?? project?.targetEndDate ?? null;
-    if (deadline !== null && scheduleDateEnd(deadline) < input.end) {
+    const deadlineEndMillis = context.deadlineEndMillisByPackageId.get(
+      item.workPackageId,
+    ) ?? null;
+    if (deadlineEndMillis !== null && deadlineEndMillis < context.horizonEndMillis) {
       if (project?.deadlineType === "HARD") {
         hardDeadlineExposureMinutes += item.unplannedMinutes;
       } else if (project?.deadlineType !== "NONE") {
@@ -650,89 +746,99 @@ export function objectiveComponents(
       }
     }
   }
-  for (const assignment of result.assignments) {
-    const entry = workPackageById.get(assignment.workPackageId);
-    if (!entry) continue;
-    const deadline = entry.workPackage.targetEndDate ?? entry.project.targetEndDate;
-    if (deadline === null) continue;
-    const deadlineEnd = scheduleDateEnd(deadline).toUTC().toJSDate();
-    if (assignment.endAt > deadlineEnd) {
-      const exposedMinutes = Math.round(
-        (assignment.endAt.getTime() - assignment.startAt.getTime()) / 60_000,
-      );
-      if (entry.project.deadlineType === "HARD") {
-        hardDeadlineExposureMinutes += exposedMinutes;
-      } else {
-        softDeadlineExposureMinutes += exposedMinutes;
-      }
-    }
-  }
-
-  const overtimeMinutes = result.assignments.reduce(
-    (total, assignment) => total + assignment.overtimeMinutes,
-    0,
+  let overtimeMinutes = 0;
+  let plannedCostCents = 0;
+  const proposedCostByProject = new Float64Array(context.budgetProjects.length);
+  const proposedWeeklyCostByProject = new Float64Array(
+    context.budgetProjects.length * context.horizonWeeks,
   );
-  const plannedCostCents = result.assignments.reduce(
-    (total, assignment) => total + assignment.plannedCostCents,
-    0,
-  );
-  const proposedCostByProject = new Map<number, number>();
-  const proposedWeeklyCostByProject = new Map<number, Map<string, number>>();
-  for (const assignment of result.assignments) {
-    proposedCostByProject.set(
-      assignment.projectId,
-      (proposedCostByProject.get(assignment.projectId) ?? 0)
-        + assignment.plannedCostCents,
-    );
-    const weeklyCosts = proposedWeeklyCostByProject.get(assignment.projectId)
-      ?? new Map<string, number>();
-    const key = weekKey(assignment.startAt);
-    weeklyCosts.set(key, (weeklyCosts.get(key) ?? 0) + assignment.plannedCostCents);
-    proposedWeeklyCostByProject.set(assignment.projectId, weeklyCosts);
-  }
-  let weeklyBudgetOverrunCents = 0;
-  let totalBudgetOverrunCents = 0;
-  for (const project of input.projects) {
-    const baseline = input.budgetBaselineByProject?.get(project.id) ?? {
-      actualCostCents: 0,
-      committedCostCents: 0,
-      committedWeeklyCostCents: new Map<string, number>(),
-    };
-    if (project.totalLaborBudgetCents !== null) {
-      totalBudgetOverrunCents += Math.max(
-        0,
-        baseline.actualCostCents
-          + baseline.committedCostCents
-          + (proposedCostByProject.get(project.id) ?? 0)
-          - project.totalLaborBudgetCents,
-      );
-    }
-    if (project.weeklyLaborBudgetCents !== null) {
-      const proposedWeekly = proposedWeeklyCostByProject.get(project.id)
-        ?? new Map<string, number>();
-      const weeks = new Set([
-        ...baseline.committedWeeklyCostCents.keys(),
-        ...proposedWeekly.keys(),
-      ]);
-      for (const key of weeks) {
-        weeklyBudgetOverrunCents += Math.max(
-          0,
-          (baseline.committedWeeklyCostCents.get(key) ?? 0)
-            + (proposedWeekly.get(key) ?? 0)
-            - project.weeklyLaborBudgetCents,
-        );
-      }
-    }
-  }
   const assignedByEmployee = new Map<number, number>();
+  const demandBySkillEmployee = new Map<string, {
+    skillId: number;
+    minimumSkillLevel: number;
+    byEmployee: Map<number, number>;
+  }>();
+  let singlePointExposureMinutes = 0;
   for (const assignment of result.assignments) {
-    const minutes = Math.round(
-      (assignment.endAt.getTime() - assignment.startAt.getTime()) / 60_000,
-    );
+    const startMillis = assignment.startAt.getTime();
+    const endMillis = assignment.endAt.getTime();
+    const minutes = Math.round((endMillis - startMillis) / 60_000);
+    overtimeMinutes += assignment.overtimeMinutes;
+    plannedCostCents += assignment.plannedCostCents;
     assignedByEmployee.set(
       assignment.employeeId,
       (assignedByEmployee.get(assignment.employeeId) ?? 0) + minutes,
     );
+
+    const entry = workPackageById.get(assignment.workPackageId);
+    if (entry) {
+      const deadlineEndMillis = context.deadlineEndMillisByPackageId.get(
+        assignment.workPackageId,
+      ) ?? null;
+      if (deadlineEndMillis !== null && endMillis > deadlineEndMillis) {
+        if (entry.project.deadlineType === "HARD") {
+          hardDeadlineExposureMinutes += minutes;
+        } else {
+          softDeadlineExposureMinutes += minutes;
+        }
+      }
+      if (includeResilienceProxy) {
+        const skillScore = context.skillScoreByPackageId.get(
+          assignment.workPackageId,
+        )!;
+        if (skillScore.qualifiedEmployeeCount <= 1) {
+          singlePointExposureMinutes += minutes;
+        }
+        const skillDemand = demandBySkillEmployee.get(skillScore.key) ?? {
+          skillId: skillScore.skillId,
+          minimumSkillLevel: skillScore.minimumSkillLevel,
+          byEmployee: new Map<number, number>(),
+        };
+        skillDemand.byEmployee.set(
+          assignment.employeeId,
+          (skillDemand.byEmployee.get(assignment.employeeId) ?? 0) + minutes,
+        );
+        demandBySkillEmployee.set(skillScore.key, skillDemand);
+      }
+    }
+
+    const projectIndex = context.budgetProjectIndex.get(assignment.projectId);
+    if (projectIndex === undefined) continue;
+    proposedCostByProject[projectIndex]! += assignment.plannedCostCents;
+    const weekIndex = scoringWeekIndex(
+      startMillis,
+      context.weekBoundaryMillis,
+    );
+    if (weekIndex >= 0) {
+      proposedWeeklyCostByProject[
+        projectIndex * context.horizonWeeks + weekIndex
+      ]! += assignment.plannedCostCents;
+    }
+  }
+  let weeklyBudgetOverrunCents = 0;
+  let totalBudgetOverrunCents = 0;
+  for (let projectIndex = 0; projectIndex < context.budgetProjects.length; projectIndex += 1) {
+    const project = context.budgetProjects[projectIndex]!;
+    if (project.totalBudgetCents !== null) {
+      totalBudgetOverrunCents += Math.max(
+        0,
+        project.baselineTotalCostCents
+          + proposedCostByProject[projectIndex]!
+          - project.totalBudgetCents,
+      );
+    }
+    if (project.weeklyBudgetCents !== null) {
+      for (let weekIndex = 0; weekIndex < context.horizonWeeks; weekIndex += 1) {
+        weeklyBudgetOverrunCents += Math.max(
+          0,
+          project.baselineWeeklyCostCents[weekIndex]!
+            + proposedWeeklyCostByProject[
+              projectIndex * context.horizonWeeks + weekIndex
+            ]!
+            - project.weeklyBudgetCents,
+        );
+      }
+    }
   }
   const utilization = input.employees.map((employee) =>
     (assignedByEmployee.get(employee.id) ?? 0) / Math.max(1, employee.preferredWeeklyMinutes),
@@ -763,42 +869,6 @@ export function objectiveComponents(
     };
   }
 
-  const totalAssignedByEmployee = new Map<number, number>();
-  const demandBySkillEmployee = new Map<string, {
-    skillId: number;
-    minimumSkillLevel: number;
-    byEmployee: Map<number, number>;
-  }>();
-  let singlePointExposureMinutes = 0;
-  for (const assignment of result.assignments) {
-    const entry = workPackageById.get(assignment.workPackageId);
-    if (!entry) continue;
-    const minutes = Math.round(
-      (assignment.endAt.getTime() - assignment.startAt.getTime()) / 60_000,
-    );
-    totalAssignedByEmployee.set(
-      assignment.employeeId,
-      (totalAssignedByEmployee.get(assignment.employeeId) ?? 0) + minutes,
-    );
-    const skillKey = skillRequirementKey(
-      entry.workPackage.requiredSkillId,
-      entry.workPackage.minimumSkillLevel,
-    );
-    const qualified = context.qualifiedEmployeesByRequirement.get(skillKey) ?? [];
-    if (qualified.length <= 1) singlePointExposureMinutes += minutes;
-    const skillDemand = demandBySkillEmployee.get(skillKey) ?? {
-      skillId: entry.workPackage.requiredSkillId,
-      minimumSkillLevel: entry.workPackage.minimumSkillLevel,
-      byEmployee: new Map<number, number>(),
-    };
-    const { byEmployee } = skillDemand;
-    byEmployee.set(
-      assignment.employeeId,
-      (byEmployee.get(assignment.employeeId) ?? 0) + minutes,
-    );
-    demandBySkillEmployee.set(skillKey, skillDemand);
-  }
-
   let maxRecoveryShortfallMinutes = 0;
   let weightedConcentration = 0;
   let totalSkillDemand = 0;
@@ -819,7 +889,7 @@ export function objectiveComponents(
         .reduce((total, employee) => {
           const horizonCapacity = employee.maxWeeklyMinutes * context.horizonWeeks;
           const alreadyUsed = (context.occupiedByEmployee.get(employee.id) ?? 0)
-            + (totalAssignedByEmployee.get(employee.id) ?? 0);
+            + (assignedByEmployee.get(employee.id) ?? 0);
           return total + Math.max(0, horizonCapacity - alreadyUsed);
         }, 0);
       maxRecoveryShortfallMinutes = Math.max(
