@@ -149,7 +149,24 @@ export function weekKey(date: Date) {
 }
 
 export function localDateAtMinute(date: DateTime, minute: number) {
-  return date.startOf("day").plus({ minutes: minute }).toUTC().toJSDate();
+  if (!Number.isInteger(minute) || minute < 0 || minute > 1440) {
+    throw new Error("MINUTE_OUT_OF_RANGE");
+  }
+  if (minute === 1440) {
+    return date.startOf("day").plus({ days: 1 }).toUTC().toJSDate();
+  }
+  const hour = Math.floor(minute / 60);
+  const minuteOfHour = minute % 60;
+  const local = date.startOf("day").set({
+    hour,
+    minute: minuteOfHour,
+    second: 0,
+    millisecond: 0,
+  });
+  if (local.hour !== hour || local.minute !== minuteOfHour) {
+    throw new Error("LOCAL_TIME_DOES_NOT_EXIST");
+  }
+  return local.toUTC().toJSDate();
 }
 
 function priorityRank(priority: string) {

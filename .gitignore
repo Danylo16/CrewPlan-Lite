@@ -12,6 +12,7 @@ node_modules
 server/.env
 dist
 dist-ssr
+artifacts/
 *.local
 server/src/generated/prisma
 

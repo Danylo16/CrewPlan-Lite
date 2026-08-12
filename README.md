@@ -18,6 +18,7 @@ CrewPlan combines project lifecycle, work-package dependencies, employee skills,
 ## Features
 
 - Multi-week rolling-horizon portfolio planning with preview/apply safety
+- Immutable planning history with versioned optimizer evidence and allocation provenance
 - Weekly capacity, utilization, cost, budget and deadline diagnostics
 - Project lifecycle, priorities, deadlines and optimization strategies
 - Work packages with remaining hours, skill levels, dependencies and parallelism
@@ -121,6 +122,7 @@ POST /api/portfolio-plan/scenarios
 POST /api/portfolio-plan/resilience
 POST /api/portfolio-plan/apply
 GET  /api/portfolio-plan/runs
+GET  /api/portfolio-plan/runs/:id
 ```
 
 Portfolio decision responses are marked `Cache-Control: no-store` and include
@@ -277,6 +279,24 @@ Type-check the backend:
 yarn tsc --noEmit
 ```
 Tests and production builds are also executed automatically by GitHub Actions on every push and pull request to `main`.
+
+## Reproducible portfolio evidence
+
+After loading the V2 demo dataset and starting the API, generate the article
+evidence bundle with:
+
+```bash
+cd server
+yarn evidence:portfolio
+```
+
+The command runs the same Compare strategies request at least five times,
+computes min/p50/p95/max timing, verifies deterministic signatures and the
+cost/deadline and cost/resilience trade-offs, performs full review and N−1
+analysis for Balanced and Resilience First, and writes JSON plus Markdown under
+`artifacts/`. It exits with a failure code when an acceptance gate fails. See
+[`docs/portfolio-evidence.md`](docs/portfolio-evidence.md) for parameters and
+the evidence contract.
 
 ## Production Build
 

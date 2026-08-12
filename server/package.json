@@ -13,6 +13,7 @@
     "benchmark:portfolio": "tsx src/scripts/benchmarkPortfolioOptimizer.ts",
     "benchmark:portfolio:json": "tsx src/scripts/benchmarkPortfolioOptimizer.ts --json",
     "benchmark:profiles": "tsx src/scripts/benchmarkPlanningProfiles.ts",
+    "evidence:portfolio": "tsx src/scripts/exportPortfolioEvidence.ts",
     "test:watch": "vitest"
   },
   "license": "MIT",

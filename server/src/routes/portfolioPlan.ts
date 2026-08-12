@@ -7,6 +7,11 @@ import {
   buildPortfolioScenarioComparison,
 } from "../planning/portfolioPlan.js";
 import { buildPortfolioResilienceReport } from "../planning/portfolioResilience.js";
+import {
+  buildPlanningRunEvidence,
+  planningRunDetail,
+  planningRunSummary,
+} from "../planning/planningRunEvidence.js";
 import { getWeekWindowUtc, parseWeekStart } from "../scheduling/timeAdapter.js";
 import {
   preventDecisionCaching,
@@ -29,8 +34,15 @@ const requestSchema = z.object({
   replaceGenerated: z.boolean().default(true),
   planningProfile: planningProfileSchema.default("BALANCED"),
 });
-const applySchema = requestSchema.extend({ previewId: hashSchema, inputVersion: hashSchema });
-const resilienceSchema = applySchema;
+const decisionSchema = requestSchema.extend({
+  previewId: hashSchema,
+  inputVersion: hashSchema,
+});
+const applySchema = decisionSchema.extend({
+  comparisonId: hashSchema.optional(),
+});
+const resilienceSchema = decisionSchema;
+const runIdSchema = z.string().uuid();
 
 function planningError(error: unknown, response: Parameters<Parameters<typeof portfolioPlanRouter.post>[1]>[1]) {
   const code = error instanceof Error ? error.message : "INTERNAL_SERVER_ERROR";
@@ -163,8 +175,10 @@ portfolioPlanRouter.post("/apply", async (request, response) => {
             horizonWeeks: result.data.horizonWeeks,
             timezone: preview.timezone,
             planningProfile: result.data.planningProfile,
+            replaceGenerated: result.data.replaceGenerated,
           },
           metrics: preview.metrics,
+          evidence: buildPlanningRunEvidence(preview, result.data.comparisonId),
         },
       });
       const workData = preview.assignments.map((assignment) => ({
@@ -196,7 +210,14 @@ portfolioPlanRouter.post("/apply", async (request, response) => {
       const creation = workData.length + fixedData.length === 0
         ? { count: 0 }
         : await transaction.shift.createMany({ data: [...workData, ...fixedData] });
-      return { planningRunId: run.id, previewId: preview.previewId, createdShifts: creation.count, deletedShifts, metrics: preview.metrics };
+      return {
+        planningRunId: run.id,
+        previewId: preview.previewId,
+        createdShifts: creation.count,
+        deletedShifts,
+        evidenceVersion: "planning-run-evidence-v1",
+        metrics: preview.metrics,
+      };
     }, {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       maxWait: 10_000,
@@ -217,6 +238,54 @@ portfolioPlanRouter.post("/apply", async (request, response) => {
 });
 
 portfolioPlanRouter.get("/runs", async (_request, response) => {
-  const runs = await prisma.planningRun.findMany({ orderBy: { appliedAt: "desc" }, take: 20 });
-  return response.json(runs);
+  const startedAt = performance.now();
+  const runs = await prisma.planningRun.findMany({
+    orderBy: { appliedAt: "desc" },
+    take: 20,
+  });
+  finishPlanningResponse(response, "run_history", startedAt);
+  return response.json(runs.map(planningRunSummary));
+});
+
+portfolioPlanRouter.get("/runs/:id", async (request, response) => {
+  const startedAt = performance.now();
+  const runId = runIdSchema.safeParse(request.params.id);
+  if (!runId.success) {
+    return response.status(400).json({
+      code: "VALIDATION_ERROR",
+      message: "Invalid planning run id",
+    });
+  }
+  const run = await prisma.planningRun.findUnique({
+    where: { id: runId.data },
+    include: {
+      shifts: {
+        orderBy: [{ startAt: "asc" }, { id: "asc" }],
+        select: {
+          id: true,
+          employeeId: true,
+          projectId: true,
+          workPackageId: true,
+          projectRequirementId: true,
+          startAt: true,
+          endAt: true,
+          kind: true,
+          origin: true,
+          status: true,
+          plannedCostCents: true,
+          employee: { select: { name: true } },
+          project: { select: { name: true } },
+          workPackage: { select: { name: true } },
+        },
+      },
+    },
+  });
+  if (run === null) {
+    return response.status(404).json({
+      code: "PLANNING_RUN_NOT_FOUND",
+      message: "Planning run does not exist",
+    });
+  }
+  finishPlanningResponse(response, "run_detail", startedAt);
+  return response.json(planningRunDetail(run));
 });

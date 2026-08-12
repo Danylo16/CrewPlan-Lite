@@ -668,6 +668,47 @@ describe("multi-week portfolio planner", () => {
     });
   });
 
+  it("includes Fixed Coverage labor in weekly and total budget evidence", async () => {
+    const planningDatabase = database([project([], {
+      totalLaborBudgetCents: 100_000,
+      weeklyLaborBudgetCents: 50_000,
+    })]);
+    planningDatabase.projectRequirement.findMany.mockResolvedValue([{
+      id: 20,
+      projectId: 1,
+      dayOfWeek: "MONDAY",
+      startMinute: 9 * 60,
+      endMinute: 17 * 60,
+      requiredEmployees: 1,
+      requiredSkillId: 1,
+      minimumSkillLevel: 3,
+      priority: "HIGH",
+      activeFrom: null,
+      activeUntil: null,
+    }]);
+
+    const preview = await buildPortfolioPlanPreview(planningDatabase, {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 1,
+      replaceGenerated: true,
+    });
+
+    expect(preview.metrics).toMatchObject({
+      proposedFixedCoverageMinutes: 480,
+      fixedCoverageCostCents: 48_000,
+      workPackageCostCents: 0,
+      plannedCostCents: 48_000,
+    });
+    expect(preview.projectCostSummaries[0]).toMatchObject({
+      fixedCoverageCostCents: 48_000,
+      totalBudgetVarianceCents: -52_000,
+    });
+    expect(preview.projectCostSummaries[0]?.weeks[0]).toMatchObject({
+      plannedCostCents: 48_000,
+      weeklyBudgetVarianceCents: -2_000,
+    });
+  });
+
   it("topologically schedules a successor after its predecessor", async () => {
     const predecessor = workPackage({ id: 10, name: "Design", remainingMinutes: 240, estimatedMinutes: 240, sortOrder: 2 });
     const successor = workPackage({
@@ -694,6 +735,41 @@ describe("multi-week portfolio planner", () => {
     expect(successorStart).toBeGreaterThanOrEqual(predecessorEnd);
   });
 
+  it("preserves a dependency boundary across planning weeks", async () => {
+    const predecessor = workPackage({
+      id: 10,
+      name: "Foundation",
+      estimatedMinutes: 2_400,
+      remainingMinutes: 2_400,
+    });
+    const successor = workPackage({
+      id: 11,
+      name: "Release",
+      estimatedMinutes: 480,
+      remainingMinutes: 480,
+      incomingDependencies: [{
+        predecessorId: 10,
+        successorId: 11,
+        lagMinutes: 0,
+        predecessor,
+      }],
+    });
+
+    const preview = await buildPortfolioPlanPreview(
+      database([project([successor, predecessor])]),
+      { horizonStart: "2026-08-10", horizonWeeks: 2, replaceGenerated: true },
+    );
+
+    const predecessorEnd = Math.max(...preview.assignments
+      .filter((item) => item.workPackageId === 10)
+      .map((item) => new Date(item.endAt).getTime()));
+    const successorAssignment = preview.assignments.find(
+      (item) => item.workPackageId === 11,
+    );
+    expect(successorAssignment?.startAt).toBe("2026-08-17T07:00:00.000Z");
+    expect(new Date(successorAssignment!.startAt).getTime()).toBeGreaterThan(predecessorEnd);
+  });
+
   it("does not schedule hard-deadline work after the target date", async () => {
     const constrained = project([
       workPackage({ remainingMinutes: 960, estimatedMinutes: 960 }),
@@ -709,6 +785,36 @@ describe("multi-week portfolio planner", () => {
 
     expect(preview.assignments.every((item) => item.startAt.startsWith("2026-08-10"))).toBe(true);
     expect(preview.unplannedWorkPackages[0]?.unplannedMinutes).toBe(480);
+  });
+
+  it("uses the Vienna calendar deadline on the DST transition day", async () => {
+    const sundayAvailability = [{
+      id: 1,
+      employeeId: 1,
+      dayOfWeek: "SUNDAY",
+      startMinute: 9 * 60,
+      endMinute: 17 * 60,
+    }];
+    const constrained = project([workPackage()], {
+      startDate: new Date("2026-03-23T00:00:00.000Z"),
+      targetEndDate: new Date("2026-03-29T00:00:00.000Z"),
+      deadlineType: "HARD",
+    });
+    const preview = await buildPortfolioPlanPreview(database(
+      [constrained],
+      [],
+      [employee({ availability: sundayAvailability })],
+    ), {
+      horizonStart: "2026-03-23",
+      horizonWeeks: 1,
+      replaceGenerated: true,
+    });
+
+    expect(preview.assignments[0]).toMatchObject({
+      startAt: "2026-03-29T07:00:00.000Z",
+      endAt: "2026-03-29T15:00:00.000Z",
+    });
+    expect(preview.unplannedWorkPackages).toEqual([]);
   });
 
   it("replaces generated occupancy but always preserves manual shifts", async () => {
