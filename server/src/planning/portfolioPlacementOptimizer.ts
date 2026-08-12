@@ -127,10 +127,11 @@ interface PlacementStaticIndex {
     number,
     PortfolioOptimizerInput["employees"]
   >;
-  availabilityByEmployeeDay: Map<
-    string,
-    PortfolioOptimizerInput["employees"][number]["availability"]
-  >;
+  days: Array<{
+    localDayMillis: number;
+    weekStart: string;
+    windowsByEmployee: Map<number, Interval[]>;
+  }>;
   portfolioScale: number;
 }
 
@@ -163,9 +164,36 @@ function placementStaticIndex(input: PortfolioOptimizerInput): PlacementStaticIn
       ]);
     }
   }
+  const days: PlacementStaticIndex["days"] = [];
+  // Materialize timezone-aware availability windows once per horizon. Beam
+  // siblings share this immutable index instead of rebuilding Luxon dates for
+  // every package/state candidate.
+  for (
+    let day = input.start.startOf("day");
+    day < input.end;
+    day = day.plus({ days: 1 })
+  ) {
+    const dayName = day.toFormat("cccc").toUpperCase();
+    const windowsByEmployee = new Map<number, Interval[]>();
+    for (const employee of input.employees) {
+      const availability = availabilityByEmployeeDay.get(
+        `${employee.id}:${dayName}`,
+      );
+      if (!availability) continue;
+      windowsByEmployee.set(employee.id, availability.map((window) => ({
+        startAt: localDateAtMinute(day, window.startMinute),
+        endAt: localDateAtMinute(day, window.endMinute),
+      })));
+    }
+    days.push({
+      localDayMillis: day.toMillis(),
+      weekStart: day.startOf("week").toISODate()!,
+      windowsByEmployee,
+    });
+  }
   return {
     eligibleEmployeesByPackage,
-    availabilityByEmployeeDay,
+    days,
     portfolioScale: input.employees.length * input.projects.reduce(
       (total, project) => total + project.workPackages.length,
       0,
@@ -263,30 +291,25 @@ function placementCandidates(
     usedMinutes: number;
   }>;
   let candidateDayCount = 0;
-  for (
-    let day = earliest.startOf("day");
-    day < input.end;
-    day = day.plus({ days: 1 })
-  ) {
+  const earliestDayMillis = earliest.startOf("day").toMillis();
+  const earliestDate = earliest.toUTC().toJSDate();
+  const hardDeadlineDayMillis = project.deadlineType === "HARD"
+    && project.targetEndDate
+    ? DateTime.fromJSDate(project.targetEndDate, { zone: "utc" })
+      .setZone(SCHEDULE_TIME_ZONE).startOf("day").toMillis()
+    : null;
+  for (const day of staticIndex.days) {
+    if (day.localDayMillis < earliestDayMillis) continue;
     if (
-      project.deadlineType === "HARD"
-      && project.targetEndDate
-      && day.startOf("day") > DateTime.fromJSDate(project.targetEndDate, { zone: "utc" })
-        .setZone(SCHEDULE_TIME_ZONE).startOf("day")
+      hardDeadlineDayMillis !== null
+      && day.localDayMillis > hardDeadlineDayMillis
     ) return [];
-    const dayName = day.toFormat("cccc").toUpperCase();
-    const earliestDate = earliest.toUTC().toJSDate();
     const candidates = (staticIndex.eligibleEmployeesByPackage.get(workPackage.id) ?? [])
-      .flatMap((employee) => (
-        staticIndex.availabilityByEmployeeDay.get(`${employee.id}:${dayName}`) ?? []
-      ).flatMap((availability) => {
-          const window = {
-            startAt: localDateAtMinute(day, availability.startMinute),
-            endAt: localDateAtMinute(day, availability.endMinute),
-          };
-          return freeSegments(window, state.employeeOccupied.get(employee.id) ?? [])
-            .map((segment) => ({ employee, segment }));
-        }))
+      .flatMap((employee) => (day.windowsByEmployee.get(employee.id) ?? [])
+        .flatMap((window) => freeSegments(
+          window,
+          state.employeeOccupied.get(employee.id) ?? [],
+        ).map((segment) => ({ employee, segment }))))
       .filter(({ segment }) => segment.endAt > earliestDate)
       .map(({ employee, segment }) => ({
         employee,
@@ -296,7 +319,7 @@ function placementCandidates(
         },
       }))
       .flatMap(({ employee, segment }) => {
-        const key = `${employee.id}:${weekKey(segment.startAt)}`;
+        const key = `${employee.id}:${day.weekStart}`;
         const used = state.weeklyMinutes.get(key) ?? 0;
         const availableWeekly = employee.maxWeeklyMinutes - used;
         const segmentMinutes = Math.round(
@@ -1013,8 +1036,8 @@ export function allocatePortfolioScenarioPlans(
     results.set(profile, {
       ...best,
       optimizerDiagnostics: {
-        algorithmVersion: "portfolio-pareto-beam-v2",
-        strategy: "SHARED_MULTI_OBJECTIVE_PARETO_BEAM_SEARCH",
+        algorithmVersion: "portfolio-pareto-beam-v3",
+        strategy: "INDEXED_SHARED_MULTI_OBJECTIVE_PARETO_BEAM_SEARCH",
         planningProfile: profile,
         searchMode: "COMPARISON",
         beamWidth: limits.beamWidth,

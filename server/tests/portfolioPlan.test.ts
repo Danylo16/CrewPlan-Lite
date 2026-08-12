@@ -120,6 +120,9 @@ describe("multi-week portfolio planner", () => {
       "RESILIENCE_FIRST",
     ]);
     expect(comparison.scenarios.every((scenario) => scenario.proposedWorkMinutes === 480)).toBe(true);
+    expect(comparison.scenarios.every(
+      (scenario) => scenario.algorithmVersion === "portfolio-pareto-beam-v3",
+    )).toBe(true);
     expect(comparison.comparisonMode).toBe("SHARED_PARETO_FRONTIER");
     expect(new Set(comparison.scenarios.map(
       (scenario) => scenario.optimizerRuntimeMs,
@@ -135,6 +138,21 @@ describe("multi-week portfolio planner", () => {
     expect(planningDatabase.projectRequirement.findMany).toHaveBeenCalledTimes(1);
     expect(planningDatabase.shift.findMany).toHaveBeenCalledTimes(2);
     expect(fixedPreviewRunner).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads fixed coverage once for a multi-week comparison", async () => {
+    const planningDatabase = database([project()]);
+    const comparison = await buildPortfolioScenarioComparison(planningDatabase, {
+      horizonStart: "2026-08-10",
+      horizonWeeks: 6,
+      replaceGenerated: true,
+    });
+
+    expect(comparison.scenarios).toHaveLength(4);
+    expect(planningDatabase.employee.findMany).toHaveBeenCalledTimes(2);
+    expect(planningDatabase.project.findMany).toHaveBeenCalledTimes(1);
+    expect(planningDatabase.projectRequirement.findMany).toHaveBeenCalledTimes(1);
+    expect(planningDatabase.shift.findMany).toHaveBeenCalledTimes(2);
   });
 
   it("fully recovers a scheduled employee absence when an equivalent replacement exists", async () => {

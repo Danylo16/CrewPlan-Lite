@@ -187,8 +187,8 @@ describe("portfolio planning profiles", () => {
     expect(costFirst.optimizerDiagnostics.optimized.laborCostCents)
       .toBeLessThan(deadlineFirst.optimizerDiagnostics.optimized.laborCostCents);
     expect(costFirst.optimizerDiagnostics).toMatchObject({
-      algorithmVersion: "portfolio-pareto-beam-v2",
-      strategy: "SHARED_MULTI_OBJECTIVE_PARETO_BEAM_SEARCH",
+      algorithmVersion: "portfolio-pareto-beam-v3",
+      strategy: "INDEXED_SHARED_MULTI_OBJECTIVE_PARETO_BEAM_SEARCH",
       beamWidth: 8,
       packageVariantWidth: 4,
       branchWidth: 4,

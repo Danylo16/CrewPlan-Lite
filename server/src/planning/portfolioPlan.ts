@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { DateTime } from "luxon";
 import type { Prisma } from "../generated/prisma/client.js";
-import { buildSchedulePreview } from "../scheduling/schedulePreview.js";
+import {
+  buildSchedulePreview,
+  buildSchedulePreviews,
+} from "../scheduling/schedulePreview.js";
 import { allocationCostBreakdown } from "../scheduling/scoring.js";
 import { SCHEDULE_TIME_ZONE } from "../scheduling/timeAdapter.js";
 import {
@@ -128,6 +131,56 @@ function memoizedSchedulePreviewRunner(
   };
 }
 
+function batchedSchedulePreviewRunner(
+  database: PlanningDatabase,
+  options: Pick<
+    PortfolioPlanOptions,
+    "horizonStart" | "horizonWeeks" | "replaceGenerated"
+  >,
+): typeof buildSchedulePreview {
+  if (
+    !Number.isInteger(options.horizonWeeks)
+    || options.horizonWeeks < 1
+    || options.horizonWeeks > MAX_HORIZON_WEEKS
+  ) {
+    throw new Error("HORIZON_WEEKS_INVALID");
+  }
+  const start = monday(options.horizonStart);
+  const weekStarts = Array.from(
+    { length: options.horizonWeeks },
+    (_, index) => start.plus({ weeks: index }).toISODate()!,
+  );
+  const expectedWeeks = new Set(weekStarts);
+  const previews = buildSchedulePreviews(
+    database,
+    weekStarts,
+    options.replaceGenerated,
+  ).then((items) => new Map(items.map((item) => [item.weekStart, item])));
+
+  return async (
+    fallbackDatabase,
+    weekStart,
+    replaceExisting,
+    excludedEmployeeIds = [],
+  ) => {
+    if (
+      !expectedWeeks.has(weekStart)
+      || replaceExisting !== options.replaceGenerated
+      || excludedEmployeeIds.length > 0
+    ) {
+      return buildSchedulePreview(
+        fallbackDatabase,
+        weekStart,
+        replaceExisting,
+        excludedEmployeeIds,
+      );
+    }
+    const preview = (await previews).get(weekStart);
+    if (!preview) throw new Error("SCHEDULE_PREVIEW_NOT_FOUND");
+    return preview;
+  };
+}
+
 interface CostedInterval extends Interval {
   employeeId: number;
   projectId: number;
@@ -186,16 +239,23 @@ export async function buildPortfolioPlanPreview(
   const horizonStart = start.toUTC().toJSDate();
   const horizonEndExclusive = end.toUTC().toJSDate();
 
-  const fixedPreviews = await Promise.all(
-    Array.from({ length: options.horizonWeeks }, (_, index) => (
-      options.fixedPreviewRunner ?? buildSchedulePreview
-    )(
+  const weekStarts = Array.from(
+    { length: options.horizonWeeks },
+    (_, index) => start.plus({ weeks: index }).toISODate()!,
+  );
+  const fixedPreviews = options.fixedPreviewRunner
+    ? await Promise.all(weekStarts.map((weekStart) => options.fixedPreviewRunner!(
       database,
-      start.plus({ weeks: index }).toISODate()!,
+      weekStart,
       options.replaceGenerated,
       options.excludedEmployeeIds ?? [],
-    )),
-  );
+    )))
+    : await buildSchedulePreviews(
+      database,
+      weekStarts,
+      options.replaceGenerated,
+      options.excludedEmployeeIds ?? [],
+    );
 
   const [employees, projects, horizonShifts, futureWorkPackageShifts] = await Promise.all([
     database.employee.findMany({
@@ -588,7 +648,9 @@ export async function buildPortfolioScenarioComparison(
 ) {
   const startedAt = Date.now();
   const cachedDatabase = createPlanningSnapshotDatabase(database);
-  const fixedPreviewRunner = memoizedSchedulePreviewRunner(options.fixedPreviewRunner);
+  const fixedPreviewRunner = options.fixedPreviewRunner
+    ? memoizedSchedulePreviewRunner(options.fixedPreviewRunner)
+    : batchedSchedulePreviewRunner(cachedDatabase, options);
   let sharedPlans: ReturnType<typeof allocatePortfolioScenarioPlans> | null = null;
   let sharedOptimizerStartedAt: number | null = null;
   let sharedOptimizerFinishedAt: number | null = null;
@@ -612,6 +674,8 @@ export async function buildPortfolioScenarioComparison(
     const objective = preview.optimizerDiagnostics.objectiveVector;
     return {
       planningProfile,
+      algorithmVersion: preview.optimizerDiagnostics.algorithmVersion,
+      strategy: preview.optimizerDiagnostics.strategy,
       previewId: preview.previewId,
       inputVersion: preview.inputVersion,
       proposedWorkMinutes: preview.metrics.proposedWorkMinutes,

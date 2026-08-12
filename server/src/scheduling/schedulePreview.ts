@@ -19,7 +19,7 @@ const MAX_EMPLOYEES = 50;
 const MAX_REQUIREMENTS = 100;
 const MAX_STAFFING_POSITIONS = 300;
 
-type ScheduleDatabase = Pick<
+export type ScheduleDatabase = Pick<
   Prisma.TransactionClient,
   "employee" | "projectRequirement" | "shift"
 >;
@@ -45,6 +45,45 @@ function hash(value: unknown) {
 interface StoredShiftInterval extends ExistingShiftInput {
   id: number;
   origin: "MANUAL" | "SOLVER" | "LEGACY";
+}
+
+interface StoredEmployee {
+  id: number;
+  preferredWeeklyMinutes: number;
+  maxWeeklyMinutes: number;
+  hourlyCostCents: number;
+  overtimeRateBasisPoints: number;
+  skills: Array<{ skillId: number; level: number }>;
+  availability: Array<{
+    dayOfWeek: SchedulingEmployee["availability"][number]["dayOfWeek"];
+    startMinute: number;
+    endMinute: number;
+  }>;
+}
+
+interface StoredRequirement {
+  id: number;
+  projectId: number;
+  dayOfWeek: SchedulingRequirement["dayOfWeek"];
+  startMinute: number;
+  endMinute: number;
+  requiredEmployees: number;
+  requiredSkillId: number | null;
+  minimumSkillLevel: number;
+  priority: SchedulingRequirement["priority"];
+  activeFrom: Date | null;
+  activeUntil: Date | null;
+}
+
+interface StoredShift {
+  id: number;
+  employeeId: number;
+  projectId: number;
+  startAt: Date;
+  endAt: Date;
+  updatedAt: Date;
+  origin: "MANUAL" | "SOLVER" | "LEGACY";
+  status: string;
 }
 
 function employeeCanFulfil(
@@ -118,57 +157,15 @@ function reconcileExistingShifts(
   return { existingAssignments, matchedByRequirement };
 }
 
-export async function buildSchedulePreview(
-  database: ScheduleDatabase,
+function buildSchedulePreviewFromSnapshot(
   weekStartValue: string,
   replaceExisting: boolean,
-  excludedEmployeeIds: readonly number[] = [],
+  employees: StoredEmployee[],
+  requirements: StoredRequirement[],
+  shifts: StoredShift[],
+  scheduleResultCache?: Map<string, ReturnType<typeof generateSchedule>>,
 ) {
   const weekStart = parseWeekStart(weekStartValue);
-  const weekWindow = getWeekWindowUtc(weekStart);
-  const weekStartDate = new Date(`${weekStartValue}T00:00:00.000Z`);
-  const weekEndDate = new Date(
-    `${weekStart.plus({ days: 7 }).toISODate()}T00:00:00.000Z`,
-  );
-
-  const [employees, requirements, shifts] = await Promise.all([
-    database.employee.findMany({
-      where: {
-        archivedAt: null,
-        ...(excludedEmployeeIds.length > 0
-          ? { id: { notIn: [...excludedEmployeeIds] } }
-          : {}),
-      },
-      take: MAX_EMPLOYEES + 1,
-      include: {
-        skills: true,
-        availability: true,
-      },
-      orderBy: { id: "asc" },
-    }),
-    database.projectRequirement.findMany({
-      where: {
-        project: {
-          status: { in: ["PLANNED", "ACTIVE"] },
-          archivedAt: null,
-        },
-        AND: [
-          { OR: [{ activeFrom: null }, { activeFrom: { lt: weekEndDate } }] },
-          { OR: [{ activeUntil: null }, { activeUntil: { gte: weekStartDate } }] },
-        ],
-      },
-      take: MAX_REQUIREMENTS + 1,
-      orderBy: { id: "asc" },
-    }),
-    database.shift.findMany({
-      where: {
-        status: "COMMITTED",
-        startAt: { lt: weekWindow.endAt },
-        endAt: { gt: weekWindow.startAt },
-      },
-      orderBy: { id: "asc" },
-    }),
-  ]);
 
   const requestedPositions = requirements.reduce(
     (total, requirement) => total + requirement.requiredEmployees,
@@ -184,32 +181,32 @@ export async function buildSchedulePreview(
   }
 
   const schedulingEmployees: SchedulingEmployee[] = employees.map((employee) => ({
-      id: employee.id,
-      preferredWeeklyMinutes: employee.preferredWeeklyMinutes,
-      maxWeeklyMinutes: employee.maxWeeklyMinutes,
-      hourlyCostCents: employee.hourlyCostCents,
-      overtimeRateBasisPoints: employee.overtimeRateBasisPoints,
-      skills: employee.skills.map((skill) => ({
-        skillId: skill.skillId,
-        level: skill.level,
-      })),
-      availability: employee.availability.map((availability) => ({
-        dayOfWeek: availability.dayOfWeek,
-        startMinute: availability.startMinute,
-        endMinute: availability.endMinute,
-      })),
-    }));
+    id: employee.id,
+    preferredWeeklyMinutes: employee.preferredWeeklyMinutes,
+    maxWeeklyMinutes: employee.maxWeeklyMinutes,
+    hourlyCostCents: employee.hourlyCostCents,
+    overtimeRateBasisPoints: employee.overtimeRateBasisPoints,
+    skills: employee.skills.map((skill) => ({
+      skillId: skill.skillId,
+      level: skill.level,
+    })),
+    availability: employee.availability.map((availability) => ({
+      dayOfWeek: availability.dayOfWeek,
+      startMinute: availability.startMinute,
+      endMinute: availability.endMinute,
+    })),
+  }));
   const schedulingRequirements: SchedulingRequirement[] = requirements.map((requirement) => ({
-      id: requirement.id,
-      projectId: requirement.projectId,
-      dayOfWeek: requirement.dayOfWeek,
-      startMinute: requirement.startMinute,
-      endMinute: requirement.endMinute,
-      requiredEmployees: requirement.requiredEmployees,
-      requiredSkillId: requirement.requiredSkillId,
-      minimumSkillLevel: requirement.minimumSkillLevel,
-      priority: requirement.priority,
-    }));
+    id: requirement.id,
+    projectId: requirement.projectId,
+    dayOfWeek: requirement.dayOfWeek,
+    startMinute: requirement.startMinute,
+    endMinute: requirement.endMinute,
+    requiredEmployees: requirement.requiredEmployees,
+    requiredSkillId: requirement.requiredSkillId,
+    minimumSkillLevel: requirement.minimumSkillLevel,
+    priority: requirement.priority,
+  }));
   const storedShiftIntervals: StoredShiftInterval[] = shifts.flatMap((shift) =>
     splitExistingShiftIntoDays(shift, weekStart).map((interval) => ({
       ...interval,
@@ -252,7 +249,18 @@ export async function buildSchedulePreview(
       status: shift.status,
     })),
   });
-  const result = generateSchedule(schedulingInput);
+  const schedulingSignature = scheduleResultCache
+    ? JSON.stringify(schedulingInput)
+    : null;
+  let result = schedulingSignature === null
+    ? undefined
+    : scheduleResultCache?.get(schedulingSignature);
+  if (!result) {
+    result = generateSchedule(schedulingInput);
+    if (schedulingSignature !== null) {
+      scheduleResultCache?.set(schedulingSignature, result);
+    }
+  }
   const assignments = result.assignments.map((assignment) => {
     const interval = scheduleIntervalToUtc(
       weekStart,
@@ -318,4 +326,181 @@ export async function buildSchedulePreview(
     unfilledRequirements,
     metrics,
   };
+}
+
+export async function buildSchedulePreview(
+  database: ScheduleDatabase,
+  weekStartValue: string,
+  replaceExisting: boolean,
+  excludedEmployeeIds: readonly number[] = [],
+) {
+  const weekStart = parseWeekStart(weekStartValue);
+  const weekWindow = getWeekWindowUtc(weekStart);
+  const weekStartDate = new Date(`${weekStartValue}T00:00:00.000Z`);
+  const weekEndDate = new Date(
+    `${weekStart.plus({ days: 7 }).toISODate()}T00:00:00.000Z`,
+  );
+
+  const [employees, requirements, shifts] = await Promise.all([
+    database.employee.findMany({
+      where: {
+        archivedAt: null,
+        ...(excludedEmployeeIds.length > 0
+          ? { id: { notIn: [...excludedEmployeeIds] } }
+          : {}),
+      },
+      take: MAX_EMPLOYEES + 1,
+      include: {
+        skills: true,
+        availability: true,
+      },
+      orderBy: { id: "asc" },
+    }),
+    database.projectRequirement.findMany({
+      where: {
+        project: {
+          status: { in: ["PLANNED", "ACTIVE"] },
+          archivedAt: null,
+        },
+        AND: [
+          { OR: [{ activeFrom: null }, { activeFrom: { lt: weekEndDate } }] },
+          { OR: [{ activeUntil: null }, { activeUntil: { gte: weekStartDate } }] },
+        ],
+      },
+      take: MAX_REQUIREMENTS + 1,
+      orderBy: { id: "asc" },
+    }),
+    database.shift.findMany({
+      where: {
+        status: "COMMITTED",
+        startAt: { lt: weekWindow.endAt },
+        endAt: { gt: weekWindow.startAt },
+      },
+      orderBy: { id: "asc" },
+    }),
+  ]);
+
+  return buildSchedulePreviewFromSnapshot(
+    weekStartValue,
+    replaceExisting,
+    employees,
+    requirements,
+    shifts,
+  );
+}
+
+export async function buildSchedulePreviews(
+  database: ScheduleDatabase,
+  weekStartValues: readonly string[],
+  replaceExisting: boolean,
+  excludedEmployeeIds: readonly number[] = [],
+) {
+  if (weekStartValues.length === 0) return [];
+
+  const weeks = weekStartValues.map((weekStartValue) => {
+    const weekStart = parseWeekStart(weekStartValue);
+    const weekWindow = getWeekWindowUtc(weekStart);
+    return {
+      weekStartValue,
+      weekStart,
+      weekWindow,
+      requirementStart: new Date(`${weekStartValue}T00:00:00.000Z`),
+      requirementEnd: new Date(
+        `${weekStart.plus({ days: 7 }).toISODate()}T00:00:00.000Z`,
+      ),
+    };
+  });
+  const horizonStart = weeks.reduce(
+    (earliest, week) => week.weekWindow.startAt < earliest
+      ? week.weekWindow.startAt
+      : earliest,
+    weeks[0]!.weekWindow.startAt,
+  );
+  const horizonEnd = weeks.reduce(
+    (latest, week) => week.weekWindow.endAt > latest
+      ? week.weekWindow.endAt
+      : latest,
+    weeks[0]!.weekWindow.endAt,
+  );
+  const requirementStart = weeks.reduce(
+    (earliest, week) => week.requirementStart < earliest
+      ? week.requirementStart
+      : earliest,
+    weeks[0]!.requirementStart,
+  );
+  const requirementEnd = weeks.reduce(
+    (latest, week) => week.requirementEnd > latest
+      ? week.requirementEnd
+      : latest,
+    weeks[0]!.requirementEnd,
+  );
+
+  // Read one consistent horizon snapshot. Per-week filtering below reproduces
+  // the original query boundaries without paying one database round-trip per
+  // week for requirements and committed shifts.
+  const [employees, requirements, shifts] = await Promise.all([
+    database.employee.findMany({
+      where: {
+        archivedAt: null,
+        ...(excludedEmployeeIds.length > 0
+          ? { id: { notIn: [...excludedEmployeeIds] } }
+          : {}),
+      },
+      take: MAX_EMPLOYEES + 1,
+      include: {
+        skills: true,
+        availability: true,
+      },
+      orderBy: { id: "asc" },
+    }),
+    database.projectRequirement.findMany({
+      where: {
+        project: {
+          status: { in: ["PLANNED", "ACTIVE"] },
+          archivedAt: null,
+        },
+        AND: [
+          { OR: [{ activeFrom: null }, { activeFrom: { lt: requirementEnd } }] },
+          { OR: [{ activeUntil: null }, { activeUntil: { gte: requirementStart } }] },
+        ],
+      },
+      take: MAX_REQUIREMENTS * weekStartValues.length + 1,
+      orderBy: { id: "asc" },
+    }),
+    database.shift.findMany({
+      where: {
+        status: "COMMITTED",
+        startAt: { lt: horizonEnd },
+        endAt: { gt: horizonStart },
+      },
+      orderBy: { id: "asc" },
+    }),
+  ]);
+
+  if (employees.length > MAX_EMPLOYEES) {
+    throw new ScheduleInputTooLargeError();
+  }
+
+  const scheduleResultCache = new Map<
+    string,
+    ReturnType<typeof generateSchedule>
+  >();
+  // The solver operates on week-relative weekdays/minutes. If two weeks have
+  // identical normalized requirements, employees and preserved shifts, their
+  // solver result is identical; only the UTC projection and preview hashes are
+  // rebuilt for the concrete week.
+  return weeks.map((week) => buildSchedulePreviewFromSnapshot(
+    week.weekStartValue,
+    replaceExisting,
+    employees,
+    requirements.filter((requirement) => (
+      (requirement.activeFrom === null || requirement.activeFrom < week.requirementEnd)
+      && (requirement.activeUntil === null || requirement.activeUntil >= week.requirementStart)
+    )),
+    shifts.filter((shift) => (
+      shift.startAt < week.weekWindow.endAt
+      && shift.endAt > week.weekWindow.startAt
+    )),
+    scheduleResultCache,
+  ));
 }
