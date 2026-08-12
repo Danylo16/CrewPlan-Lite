@@ -1,6 +1,10 @@
 import { DateTime } from "luxon";
 import { allocationCostBreakdown } from "../scheduling/scoring.js";
-import { SCHEDULE_TIME_ZONE } from "../scheduling/timeAdapter.js";
+import {
+  SCHEDULE_TIME_ZONE,
+  scheduleDateEnd,
+  scheduleDateStart,
+} from "../scheduling/timeAdapter.js";
 
 const MAX_ASSIGNMENTS = 4_000;
 const MAX_BLOCK_MINUTES = 480;
@@ -66,7 +70,15 @@ export interface OptimizerProject {
   startDate: Date | null;
   targetEndDate: Date | null;
   deadlineType: string;
+  totalLaborBudgetCents: number | null;
+  weeklyLaborBudgetCents: number | null;
   workPackages: OptimizerWorkPackage[];
+}
+
+export interface ProjectBudgetBaseline {
+  actualCostCents: number;
+  committedCostCents: number;
+  committedWeeklyCostCents: Map<string, number>;
 }
 
 export type PlanningProfile =
@@ -88,6 +100,7 @@ export interface PortfolioOptimizerInput {
   planningProfile?: PlanningProfile;
   searchMode?: OptimizerSearchMode;
   comparisonProfiles?: PlanningProfile[];
+  budgetBaselineByProject?: Map<number, ProjectBudgetBaseline>;
 }
 
 export interface ObjectiveScoringContext {
@@ -166,6 +179,65 @@ function orderedWorkPackages(projects: OptimizerProject[]) {
   return ordered;
 }
 
+export function dependencyCyclePackageIds(projects: OptimizerProject[]) {
+  const packages = projects.flatMap((project) => project.workPackages);
+  const packageIds = new Set(packages.map((workPackage) => workPackage.id));
+  const successors = new Map<number, number[]>(packages.map(
+    (workPackage) => [workPackage.id, []],
+  ));
+  for (const workPackage of packages) {
+    for (const dependency of workPackage.incomingDependencies) {
+      if (
+        dependency.predecessor.status !== "COMPLETED"
+        && packageIds.has(dependency.predecessorId)
+      ) {
+        successors.get(dependency.predecessorId)?.push(workPackage.id);
+      }
+    }
+  }
+
+  let nextIndex = 0;
+  const indexes = new Map<number, number>();
+  const lowLinks = new Map<number, number>();
+  const stack: number[] = [];
+  const onStack = new Set<number>();
+  const cycleIds = new Set<number>();
+  function visit(id: number) {
+    const index = nextIndex;
+    nextIndex += 1;
+    indexes.set(id, index);
+    lowLinks.set(id, index);
+    stack.push(id);
+    onStack.add(id);
+    for (const successorId of successors.get(id) ?? []) {
+      if (!indexes.has(successorId)) {
+        visit(successorId);
+        lowLinks.set(id, Math.min(lowLinks.get(id)!, lowLinks.get(successorId)!));
+      } else if (onStack.has(successorId)) {
+        lowLinks.set(id, Math.min(lowLinks.get(id)!, indexes.get(successorId)!));
+      }
+    }
+    if (lowLinks.get(id) !== indexes.get(id)) return;
+    const component: number[] = [];
+    let member: number;
+    do {
+      member = stack.pop()!;
+      onStack.delete(member);
+      component.push(member);
+    } while (member !== id);
+    if (
+      component.length > 1
+      || (successors.get(id) ?? []).includes(id)
+    ) {
+      component.forEach((componentId) => cycleIds.add(componentId));
+    }
+  }
+  [...packageIds].sort((first, second) => first - second).forEach((id) => {
+    if (!indexes.has(id)) visit(id);
+  });
+  return [...cycleIds].sort((first, second) => first - second);
+}
+
 export function allocatePortfolioWorkGreedy(
   input: PortfolioOptimizerInput,
   packageOrder?: ReturnType<typeof orderedWorkPackages>,
@@ -228,14 +300,13 @@ export function allocatePortfolioWorkGreedy(
     if (project.startDate) {
       earliest = DateTime.max(
         earliest,
-        DateTime.fromJSDate(project.startDate, { zone: "utc" }).setZone(SCHEDULE_TIME_ZONE),
+        scheduleDateStart(project.startDate),
       );
     }
     if (workPackage.earliestStartDate) {
       earliest = DateTime.max(
         earliest,
-        DateTime.fromJSDate(workPackage.earliestStartDate, { zone: "utc" })
-          .setZone(SCHEDULE_TIME_ZONE),
+        scheduleDateStart(workPackage.earliestStartDate),
       );
     }
     for (const dependency of workPackage.incomingDependencies) {
@@ -254,8 +325,7 @@ export function allocatePortfolioWorkGreedy(
       if (
         project.deadlineType === "HARD"
         && project.targetEndDate
-        && day.startOf("day") > DateTime.fromJSDate(project.targetEndDate, { zone: "utc" })
-          .setZone(SCHEDULE_TIME_ZONE).startOf("day")
+        && day.startOf("day") > scheduleDateStart(project.targetEndDate)
       ) break;
       const dayName = day.toFormat("cccc").toUpperCase();
       const earliestDate = earliest.toUTC().toJSDate();
@@ -454,6 +524,8 @@ export function objectiveVectorFromComponents(
       components.normalUnplannedMinutes,
       components.lowUnplannedMinutes,
       components.hardDeadlineExposureMinutes,
+      components.weeklyBudgetOverrunCents,
+      components.totalBudgetOverrunCents,
       components.overtimeMinutes,
       components.laborCostCents,
       components.softDeadlineExposureMinutes,
@@ -468,6 +540,8 @@ export function objectiveVectorFromComponents(
       components.highUnplannedMinutes,
       components.normalUnplannedMinutes,
       components.lowUnplannedMinutes,
+      components.weeklyBudgetOverrunCents,
+      components.totalBudgetOverrunCents,
       components.overtimeMinutes,
       components.laborCostCents,
       components.imbalanceBasisPoints,
@@ -484,6 +558,8 @@ export function objectiveVectorFromComponents(
       components.maxRecoveryShortfallMinutes,
       components.skillConcentrationBasisPoints,
       components.softDeadlineExposureMinutes,
+      components.weeklyBudgetOverrunCents,
+      components.totalBudgetOverrunCents,
       components.overtimeMinutes,
       components.laborCostCents,
       components.imbalanceBasisPoints,
@@ -496,6 +572,8 @@ export function objectiveVectorFromComponents(
     components.lowUnplannedMinutes,
     components.hardDeadlineExposureMinutes,
     components.softDeadlineExposureMinutes,
+    components.weeklyBudgetOverrunCents,
+    components.totalBudgetOverrunCents,
     components.overtimeMinutes,
     components.laborCostCents,
     components.imbalanceBasisPoints,
@@ -564,7 +642,7 @@ export function objectiveComponents(
     unplannedByPriority[priorityRank(project?.priority ?? "NORMAL")]! += item.unplannedMinutes;
     const entry = workPackageById.get(item.workPackageId);
     const deadline = entry?.workPackage.targetEndDate ?? project?.targetEndDate ?? null;
-    if (deadline !== null && deadline < input.end.toUTC().toJSDate()) {
+    if (deadline !== null && scheduleDateEnd(deadline) < input.end) {
       if (project?.deadlineType === "HARD") {
         hardDeadlineExposureMinutes += item.unplannedMinutes;
       } else if (project?.deadlineType !== "NONE") {
@@ -577,8 +655,7 @@ export function objectiveComponents(
     if (!entry) continue;
     const deadline = entry.workPackage.targetEndDate ?? entry.project.targetEndDate;
     if (deadline === null) continue;
-    const deadlineEnd = DateTime.fromJSDate(deadline, { zone: "utc" })
-      .setZone(SCHEDULE_TIME_ZONE).endOf("day").toUTC().toJSDate();
+    const deadlineEnd = scheduleDateEnd(deadline).toUTC().toJSDate();
     if (assignment.endAt > deadlineEnd) {
       const exposedMinutes = Math.round(
         (assignment.endAt.getTime() - assignment.startAt.getTime()) / 60_000,
@@ -599,6 +676,54 @@ export function objectiveComponents(
     (total, assignment) => total + assignment.plannedCostCents,
     0,
   );
+  const proposedCostByProject = new Map<number, number>();
+  const proposedWeeklyCostByProject = new Map<number, Map<string, number>>();
+  for (const assignment of result.assignments) {
+    proposedCostByProject.set(
+      assignment.projectId,
+      (proposedCostByProject.get(assignment.projectId) ?? 0)
+        + assignment.plannedCostCents,
+    );
+    const weeklyCosts = proposedWeeklyCostByProject.get(assignment.projectId)
+      ?? new Map<string, number>();
+    const key = weekKey(assignment.startAt);
+    weeklyCosts.set(key, (weeklyCosts.get(key) ?? 0) + assignment.plannedCostCents);
+    proposedWeeklyCostByProject.set(assignment.projectId, weeklyCosts);
+  }
+  let weeklyBudgetOverrunCents = 0;
+  let totalBudgetOverrunCents = 0;
+  for (const project of input.projects) {
+    const baseline = input.budgetBaselineByProject?.get(project.id) ?? {
+      actualCostCents: 0,
+      committedCostCents: 0,
+      committedWeeklyCostCents: new Map<string, number>(),
+    };
+    if (project.totalLaborBudgetCents !== null) {
+      totalBudgetOverrunCents += Math.max(
+        0,
+        baseline.actualCostCents
+          + baseline.committedCostCents
+          + (proposedCostByProject.get(project.id) ?? 0)
+          - project.totalLaborBudgetCents,
+      );
+    }
+    if (project.weeklyLaborBudgetCents !== null) {
+      const proposedWeekly = proposedWeeklyCostByProject.get(project.id)
+        ?? new Map<string, number>();
+      const weeks = new Set([
+        ...baseline.committedWeeklyCostCents.keys(),
+        ...proposedWeekly.keys(),
+      ]);
+      for (const key of weeks) {
+        weeklyBudgetOverrunCents += Math.max(
+          0,
+          (baseline.committedWeeklyCostCents.get(key) ?? 0)
+            + (proposedWeekly.get(key) ?? 0)
+            - project.weeklyLaborBudgetCents,
+        );
+      }
+    }
+  }
   const assignedByEmployee = new Map<number, number>();
   for (const assignment of result.assignments) {
     const minutes = Math.round(
@@ -623,6 +748,8 @@ export function objectiveComponents(
     lowUnplannedMinutes: unplannedByPriority[3]!,
     hardDeadlineExposureMinutes,
     softDeadlineExposureMinutes,
+    weeklyBudgetOverrunCents,
+    totalBudgetOverrunCents,
     overtimeMinutes,
     laborCostCents: plannedCostCents,
     imbalanceBasisPoints,
@@ -752,6 +879,7 @@ export function searchPackageOrders(input: PortfolioOptimizerInput) {
     ? COMPARISON_MAX_EXPLORED_STATES
     : MAX_EXPLORED_STATES;
   const defaultOrder = orderedWorkPackages(input.projects);
+  const cyclePackageIds = dependencyCyclePackageIds(input.projects);
   const itemScoreByPackage = new Map(defaultOrder.map((entry) => {
     const deadline = entry.workPackage.targetEndDate ?? entry.project.targetEndDate;
     const deadlineDay = deadline === null
@@ -832,6 +960,7 @@ export function searchPackageOrders(input: PortfolioOptimizerInput) {
     prunedStates,
     searchLimitReached,
     beamWidth,
+    dependencyCyclePackageIds: cyclePackageIds,
   };
 }
 
@@ -874,6 +1003,7 @@ export function allocatePortfolioWorkV1(
       prunedStates: orderSearch.prunedStates,
       evaluatedPlans: uniqueOrders.size,
       searchLimitReached: orderSearch.searchLimitReached,
+      dependencyCyclePackageIds: orderSearch.dependencyCyclePackageIds,
       runtimeMs: Date.now() - startedAt,
       objectiveVector: components,
       greedyBaseline: baselineMetrics,

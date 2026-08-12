@@ -7,6 +7,36 @@ import type {
 
 export const SCHEDULE_TIME_ZONE = "Europe/Vienna";
 
+/**
+ * Prisma returns `@db.Date` values as UTC-midnight JavaScript Dates. They are
+ * business calendar dates, not instants. Rebuild the same year/month/day in
+ * the schedule timezone instead of shifting the UTC instant into Vienna.
+ */
+export function scheduleDateStart(
+  value: Date,
+  zone = SCHEDULE_TIME_ZONE,
+) {
+  const storedDate = DateTime.fromJSDate(value, { zone: "utc" });
+  const localDate = DateTime.fromObject({
+    year: storedDate.year,
+    month: storedDate.month,
+    day: storedDate.day,
+  }, { zone }).startOf("day");
+
+  if (!localDate.isValid) {
+    throw new Error("SCHEDULE_DATE_INVALID");
+  }
+
+  return localDate;
+}
+
+export function scheduleDateEnd(
+  value: Date,
+  zone = SCHEDULE_TIME_ZONE,
+) {
+  return scheduleDateStart(value, zone).endOf("day");
+}
+
 interface StoredShift {
   employeeId: number;
   projectId: number;

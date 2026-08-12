@@ -6,6 +6,7 @@ import {
 } from "../src/planning/portfolioPlacementOptimizer.js";
 import {
   createObjectiveScoringContext,
+  dependencyCyclePackageIds,
   objectiveComponents,
   type OptimizerEmployee,
   type OptimizerProject,
@@ -48,6 +49,8 @@ function project(remainingMinutes: number, deadline: Date | null): OptimizerProj
     startDate: new Date("2026-08-10T00:00:00.000Z"),
     targetEndDate: deadline,
     deadlineType: deadline === null ? "NONE" : "SOFT",
+    totalLaborBudgetCents: null,
+    weeklyLaborBudgetCents: null,
     workPackages: [{
       id: 10,
       name: "Delivery",
@@ -187,7 +190,7 @@ describe("portfolio planning profiles", () => {
     expect(costFirst.optimizerDiagnostics.optimized.laborCostCents)
       .toBeLessThan(deadlineFirst.optimizerDiagnostics.optimized.laborCostCents);
     expect(costFirst.optimizerDiagnostics).toMatchObject({
-      algorithmVersion: "portfolio-pareto-beam-v3",
+      algorithmVersion: "portfolio-pareto-beam-v4",
       strategy: "INDEXED_SHARED_MULTI_OBJECTIVE_PARETO_BEAM_SEARCH",
       beamWidth: 8,
       packageVariantWidth: 4,
@@ -199,6 +202,53 @@ describe("portfolio planning profiles", () => {
     expect(new Set([...plans.values()].map(
       (plan) => plan.optimizerDiagnostics.exploredStates,
     )).size).toBe(1);
+  });
+
+  it("scores weekly and total budget overrun from actual and committed baselines", () => {
+    const portfolioProject = {
+      ...project(480, null),
+      totalLaborBudgetCents: 50_000,
+      weeklyLaborBudgetCents: 20_000,
+    };
+    const portfolioInput = {
+      ...input("COST_FIRST", [employee(1, "Anna", 3_750)], portfolioProject),
+      budgetBaselineByProject: new Map([[1, {
+        actualCostCents: 40_000,
+        committedCostCents: 10_000,
+        committedWeeklyCostCents: new Map([["2026-08-10", 15_000]]),
+      }]]),
+    };
+    const result = allocatePortfolioWork(portfolioInput);
+    expect(result.optimizerDiagnostics.objectiveVector).toMatchObject({
+      weeklyBudgetOverrunCents: 25_000,
+      totalBudgetOverrunCents: 30_000,
+    });
+  });
+
+  it("reports only Work Packages that participate in a dependency cycle", () => {
+    const first = project(480, null);
+    first.workPackages.push({
+      ...first.workPackages[0]!,
+      id: 11,
+      name: "Successor",
+      incomingDependencies: [{
+        predecessorId: 10,
+        lagMinutes: 0,
+        predecessor: { status: "TODO", name: "Delivery" },
+      }],
+    });
+    first.workPackages[0]!.incomingDependencies = [{
+      predecessorId: 11,
+      lagMinutes: 0,
+      predecessor: { status: "TODO", name: "Successor" },
+    }];
+    first.workPackages.push({
+      ...first.workPackages[0]!,
+      id: 12,
+      name: "Independent",
+      incomingDependencies: [],
+    });
+    expect(dependencyCyclePackageIds([first])).toEqual([10, 11]);
   });
 
   it("keeps later cheap capacity visible across availability gaps", () => {

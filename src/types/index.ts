@@ -256,6 +256,7 @@ export interface PortfolioOptimizerDiagnostics {
   dominancePrunedStates: number;
   evaluatedPlans: number;
   searchLimitReached: boolean;
+  dependencyCyclePackageIds: number[];
   runtimeMs: number;
   objectiveVector: {
     criticalUnplannedMinutes: number;
@@ -264,6 +265,8 @@ export interface PortfolioOptimizerDiagnostics {
     lowUnplannedMinutes: number;
     hardDeadlineExposureMinutes: number;
     softDeadlineExposureMinutes: number;
+    weeklyBudgetOverrunCents: number;
+    totalBudgetOverrunCents: number;
     overtimeMinutes: number;
     laborCostCents: number;
     imbalanceBasisPoints: number;
@@ -280,6 +283,8 @@ export interface PortfolioOptimizerDiagnostics {
 
 export interface PortfolioPlanningScenario {
   planningProfile: PlanningProfile;
+  algorithmVersion: string;
+  strategy: string;
   previewId: string;
   inputVersion: string;
   proposedWorkMinutes: number;
@@ -290,6 +295,8 @@ export interface PortfolioPlanningScenario {
   plannedCostCents: number;
   hardDeadlineExposureMinutes: number;
   softDeadlineExposureMinutes: number;
+  weeklyBudgetOverrunCents: number;
+  totalBudgetOverrunCents: number;
   singlePointExposureMinutes: number;
   maxRecoveryShortfallMinutes: number;
   skillConcentrationBasisPoints: number;

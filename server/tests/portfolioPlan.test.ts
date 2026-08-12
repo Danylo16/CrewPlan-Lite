@@ -121,7 +121,7 @@ describe("multi-week portfolio planner", () => {
     ]);
     expect(comparison.scenarios.every((scenario) => scenario.proposedWorkMinutes === 480)).toBe(true);
     expect(comparison.scenarios.every(
-      (scenario) => scenario.algorithmVersion === "portfolio-pareto-beam-v3",
+      (scenario) => scenario.algorithmVersion === "portfolio-pareto-beam-v4",
     )).toBe(true);
     expect(comparison.comparisonMode).toBe("SHARED_PARETO_FRONTIER");
     expect(new Set(comparison.scenarios.map(
@@ -550,7 +550,7 @@ describe("multi-week portfolio planner", () => {
     expect(preview.unplannedWorkPackages).toEqual([]);
     expect(preview.assignments.find((item) => item.workPackageId === 10)?.employeeId).toBe(2);
     expect(preview.assignments.find((item) => item.workPackageId === 11)?.employeeId).toBe(1);
-    expect(preview.optimizerDiagnostics.algorithmVersion).toBe("portfolio-beam-v2");
+    expect(preview.optimizerDiagnostics.algorithmVersion).toBe("portfolio-beam-v3");
     expect(preview.optimizerDiagnostics.v1Baseline.plannedMinutes).toBe(480);
     expect(preview.optimizerDiagnostics.optimized.plannedMinutes).toBe(960);
     expect(preview.optimizerDiagnostics.improvementVsV1.plannedMinutes).toBe(480);

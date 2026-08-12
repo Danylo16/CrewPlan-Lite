@@ -6,7 +6,10 @@ import {
   buildSchedulePreviews,
 } from "../scheduling/schedulePreview.js";
 import { allocationCostBreakdown } from "../scheduling/scoring.js";
-import { SCHEDULE_TIME_ZONE } from "../scheduling/timeAdapter.js";
+import {
+  SCHEDULE_TIME_ZONE,
+  scheduleDateEnd,
+} from "../scheduling/timeAdapter.js";
 import {
   allocatePortfolioScenarioPlans,
   allocatePortfolioWork,
@@ -210,6 +213,39 @@ function costTotals(items: CostedInterval[]) {
   });
 }
 
+function priceAllocations(
+  items: Array<{ categoryOrder: number; allocation: CostedInterval }>,
+  employeeById: Map<number, {
+    hourlyCostCents: number;
+    overtimeRateBasisPoints: number;
+    preferredWeeklyMinutes: number;
+  }>,
+) {
+  const weeklyMinutes = new Map<string, number>();
+  for (const { allocation } of [...items].sort((first, second) =>
+    first.categoryOrder - second.categoryOrder
+    || first.allocation.startAt.getTime() - second.allocation.startAt.getTime()
+    || first.allocation.endAt.getTime() - second.allocation.endAt.getTime()
+    || first.allocation.employeeId - second.allocation.employeeId
+    || first.allocation.projectId - second.allocation.projectId,
+  )) {
+    const employee = employeeById.get(allocation.employeeId);
+    if (!employee) continue;
+    const key = `${allocation.employeeId}:${weekKey(allocation.startAt)}`;
+    const previousMinutes = weeklyMinutes.get(key) ?? 0;
+    const minutes = Math.round(
+      (allocation.endAt.getTime() - allocation.startAt.getTime()) / 60_000,
+    );
+    const cost = allocationCostBreakdown(employee, previousMinutes, minutes);
+    allocation.regularMinutes = cost.regularMinutes;
+    allocation.overtimeMinutes = cost.overtimeMinutes;
+    allocation.regularCostCents = cost.regularCostCents;
+    allocation.overtimeCostCents = cost.overtimeCostCents;
+    allocation.plannedCostCents = cost.totalCostCents;
+    weeklyMinutes.set(key, previousMinutes + minutes);
+  }
+}
+
 function digest(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -312,6 +348,44 @@ export async function buildPortfolioPlanPreview(
     overtimeCostCents: 0,
     plannedCostCents: 0,
   })));
+  const retainedAllocations: CostedInterval[] = availablePreservedHorizonShifts.map((shift) => ({
+    employeeId: shift.employeeId,
+    projectId: shift.projectId,
+    startAt: shift.startAt,
+    endAt: shift.endAt,
+    regularMinutes: 0,
+    overtimeMinutes: 0,
+    regularCostCents: 0,
+    overtimeCostCents: 0,
+    plannedCostCents: 0,
+  }));
+  const employeeById = new Map(employees.map((employee) => [employee.id, employee]));
+  priceAllocations([
+    ...retainedAllocations.map((allocation) => ({ categoryOrder: 0, allocation })),
+    ...proposedFixed.map((allocation) => ({ categoryOrder: 1, allocation })),
+  ], employeeById);
+
+  const budgetBaselineByProject = new Map(projects.map((project) => {
+    const committed = [...retainedAllocations, ...proposedFixed].filter(
+      (allocation) => allocation.projectId === project.id,
+    );
+    const committedWeeklyCostCents = new Map<string, number>();
+    for (const allocation of committed) {
+      const key = weekKey(allocation.startAt);
+      committedWeeklyCostCents.set(
+        key,
+        (committedWeeklyCostCents.get(key) ?? 0) + allocation.plannedCostCents,
+      );
+    }
+    return [project.id, {
+      actualCostCents: project.workLogs.reduce(
+        (total, workLog) => total + (workLog.actualCostCents ?? 0),
+        0,
+      ),
+      committedCostCents: costTotals(committed).plannedCostCents,
+      committedWeeklyCostCents,
+    }] as const;
+  }));
 
   const futurePlannedByPackage = new Map<number, number>();
   const futurePlannedIntervalsByPackage = new Map<number, Interval[]>();
@@ -350,55 +424,11 @@ export async function buildPortfolioPlanPreview(
     futurePlannedIntervalsByPackage,
     planningProfile: options.planningProfile ?? "BALANCED",
     searchMode: options.optimizerSearchMode ?? "FULL",
+    budgetBaselineByProject,
   };
   const { assignments, unplannedWorkPackages, optimizerDiagnostics } = (
     options.optimizerRunner ?? allocatePortfolioWork
   )(optimizerInput);
-  const retainedAllocations: CostedInterval[] = availablePreservedHorizonShifts.map((shift) => ({
-    employeeId: shift.employeeId,
-    projectId: shift.projectId,
-    startAt: shift.startAt,
-    endAt: shift.endAt,
-    regularMinutes: 0,
-    overtimeMinutes: 0,
-    regularCostCents: 0,
-    overtimeCostCents: 0,
-    plannedCostCents: 0,
-  }));
-  const employeeById = new Map(employees.map((employee) => [employee.id, employee]));
-  const repricedWeeklyMinutes = new Map<string, number>();
-  const allocationsToPrice: Array<{
-    categoryOrder: number;
-    allocation: CostedInterval;
-  }> = [
-    ...retainedAllocations.map((allocation) => ({ categoryOrder: 0, allocation })),
-    ...proposedFixed.map((allocation) => ({ categoryOrder: 1, allocation })),
-    ...assignments.map((allocation) => ({ categoryOrder: 2, allocation })),
-  ].sort((first, second) =>
-    first.allocation.startAt.getTime() - second.allocation.startAt.getTime()
-    || first.allocation.endAt.getTime() - second.allocation.endAt.getTime()
-    || first.categoryOrder - second.categoryOrder
-    || first.allocation.employeeId - second.allocation.employeeId
-    || first.allocation.projectId - second.allocation.projectId,
-  );
-
-  for (const { allocation } of allocationsToPrice) {
-    const employee = employeeById.get(allocation.employeeId);
-    if (!employee) continue;
-    const key = `${allocation.employeeId}:${weekKey(allocation.startAt)}`;
-    const previousMinutes = repricedWeeklyMinutes.get(key) ?? 0;
-    const minutes = Math.round(
-      (allocation.endAt.getTime() - allocation.startAt.getTime()) / 60_000,
-    );
-    const cost = allocationCostBreakdown(employee, previousMinutes, minutes);
-    allocation.regularMinutes = cost.regularMinutes;
-    allocation.overtimeMinutes = cost.overtimeMinutes;
-    allocation.regularCostCents = cost.regularCostCents;
-    allocation.overtimeCostCents = cost.overtimeCostCents;
-    allocation.plannedCostCents = cost.totalCostCents;
-    repricedWeeklyMinutes.set(key, previousMinutes + minutes);
-  }
-
   const weekSummaries = Array.from({ length: options.horizonWeeks }, (_, index) => {
     const weekStart = start.plus({ weeks: index });
     const key = weekStart.toISODate()!;
@@ -488,6 +518,10 @@ export async function buildPortfolioPlanPreview(
   });
 
   const warnings = [
+    ...(optimizerDiagnostics.dependencyCyclePackageIds.length === 0 ? [] : [{
+      code: "WORK_PACKAGE_DEPENDENCY_CYCLE",
+      message: `Dependency cycle detected for Work Package IDs: ${optimizerDiagnostics.dependencyCyclePackageIds.join(", ")}`,
+    }]),
     ...fixedPreviews.flatMap((preview) => preview.unfilledRequirements.length === 0 ? [] : [{ code: "FIXED_COVERAGE_UNFILLED", message: `${preview.unfilledRequirements.length} fixed coverage positions unfilled`, weekStart: preview.weekStart }]),
     ...unplannedWorkPackages.map((item) => ({ code: "WORK_PACKAGE_UNPLANNED", message: `${item.name}: ${item.reason}`, projectId: item.projectId })),
     ...weekSummaries.filter((week) => week.utilizationPercent > 100).map((week) => ({ code: "CAPACITY_EXCEEDED", message: `Capacity exceeds 100% in week ${week.weekStart}`, weekStart: week.weekStart })),
@@ -506,7 +540,7 @@ export async function buildPortfolioPlanPreview(
         ? [{ code: "FORECAST_INCOMPLETE", message: `${project.name} has scope outside the feasible horizon; total budget exposure is incomplete`, projectId: project.id }]
         : [];
       const deadlineWarnings = project.targetEndDate === null || project.deadlineType === "NONE" ? [] : projectAssignments.flatMap((item) =>
-        item.endAt > DateTime.fromJSDate(project.targetEndDate!, { zone: "utc" }).setZone(SCHEDULE_TIME_ZONE).endOf("day").toUTC().toJSDate()
+        item.endAt > scheduleDateEnd(project.targetEndDate!).toUTC().toJSDate()
           ? [{ code: "DEADLINE_AT_RISK", message: `${project.name} has work planned after its target date`, projectId: project.id }]
           : [],
       ).slice(0, 1);
@@ -514,8 +548,7 @@ export async function buildPortfolioPlanPreview(
     }),
     ...workPackages.flatMap(({ project, workPackage }) => {
       if (workPackage.targetEndDate === null) return [];
-      const target = DateTime.fromJSDate(workPackage.targetEndDate, { zone: "utc" })
-        .setZone(SCHEDULE_TIME_ZONE).endOf("day").toUTC().toJSDate();
+      const target = scheduleDateEnd(workPackage.targetEndDate).toUTC().toJSDate();
       return assignments.some((item) => item.workPackageId === workPackage.id && item.endAt > target)
         ? [{ code: "WORK_PACKAGE_TARGET_AT_RISK", message: `${workPackage.name} is planned after its target date`, projectId: project.id }]
         : [];
@@ -686,6 +719,8 @@ export async function buildPortfolioScenarioComparison(
       plannedCostCents: preview.metrics.plannedCostCents,
       hardDeadlineExposureMinutes: objective.hardDeadlineExposureMinutes,
       softDeadlineExposureMinutes: objective.softDeadlineExposureMinutes,
+      weeklyBudgetOverrunCents: objective.weeklyBudgetOverrunCents,
+      totalBudgetOverrunCents: objective.totalBudgetOverrunCents,
       singlePointExposureMinutes: objective.singlePointExposureMinutes,
       maxRecoveryShortfallMinutes: objective.maxRecoveryShortfallMinutes,
       skillConcentrationBasisPoints: objective.skillConcentrationBasisPoints,

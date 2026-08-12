@@ -80,6 +80,8 @@ function project(
     startDate: new Date("2026-08-10T00:00:00.000Z"),
     targetEndDate: new Date("2026-08-31T00:00:00.000Z"),
     deadlineType: "SOFT",
+    totalLaborBudgetCents: null,
+    weeklyLaborBudgetCents: null,
     workPackages,
     ...overrides,
   };
