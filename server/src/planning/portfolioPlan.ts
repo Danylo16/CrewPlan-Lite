@@ -30,6 +30,7 @@ export interface PortfolioPlanOptions {
   planningProfile?: PlanningProfile;
   optimizerSearchMode?: OptimizerSearchMode;
   optimizerRunner?: typeof allocatePortfolioWork;
+  fixedPreviewRunner?: typeof buildSchedulePreview;
 }
 
 const PLANNING_PROFILES: PlanningProfile[] = [
@@ -104,6 +105,29 @@ export function createPlanningSnapshotDatabase(
   } as PlanningDatabase;
 }
 
+export function memoizedSchedulePreviewRunner(
+  delegate: typeof buildSchedulePreview = buildSchedulePreview,
+): typeof buildSchedulePreview {
+  const previews = new Map<string, ReturnType<typeof buildSchedulePreview>>();
+  return (database, weekStart, replaceExisting, excludedEmployeeIds = []) => {
+    const key = JSON.stringify({
+      weekStart,
+      replaceExisting,
+      excludedEmployeeIds: [...excludedEmployeeIds].sort((first, second) => first - second),
+    });
+    const existing = previews.get(key);
+    if (existing) return existing;
+    const result = delegate(
+      database,
+      weekStart,
+      replaceExisting,
+      excludedEmployeeIds,
+    );
+    previews.set(key, result);
+    return result;
+  };
+}
+
 interface CostedInterval extends Interval {
   employeeId: number;
   projectId: number;
@@ -163,7 +187,9 @@ export async function buildPortfolioPlanPreview(
   const horizonEndExclusive = end.toUTC().toJSDate();
 
   const fixedPreviews = await Promise.all(
-    Array.from({ length: options.horizonWeeks }, (_, index) => buildSchedulePreview(
+    Array.from({ length: options.horizonWeeks }, (_, index) => (
+      options.fixedPreviewRunner ?? buildSchedulePreview
+    )(
       database,
       start.plus({ weeks: index }).toISODate()!,
       options.replaceGenerated,
@@ -562,6 +588,7 @@ export async function buildPortfolioScenarioComparison(
 ) {
   const startedAt = Date.now();
   const cachedDatabase = createPlanningSnapshotDatabase(database);
+  const fixedPreviewRunner = memoizedSchedulePreviewRunner(options.fixedPreviewRunner);
   const scenarios = [];
   let sharedPlans: ReturnType<typeof allocatePortfolioScenarioPlans> | null = null;
   const sharedRunner: typeof allocatePortfolioWork = (input) => {
@@ -575,6 +602,7 @@ export async function buildPortfolioScenarioComparison(
       planningProfile,
       optimizerSearchMode: "COMPARISON",
       optimizerRunner: sharedRunner,
+      fixedPreviewRunner,
     });
     const objective = preview.optimizerDiagnostics.objectiveVector;
     scenarios.push({
