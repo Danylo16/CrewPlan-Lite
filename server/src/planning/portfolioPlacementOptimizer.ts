@@ -1,6 +1,9 @@
 import { DateTime } from "luxon";
 import { allocationCostBreakdown } from "../scheduling/scoring.js";
-import { SCHEDULE_TIME_ZONE } from "../scheduling/timeAdapter.js";
+import {
+  SCHEDULE_TIME_ZONE,
+  scheduleDateStart,
+} from "../scheduling/timeAdapter.js";
 import {
   allocatePortfolioWorkV1,
   compareVectors,
@@ -242,14 +245,13 @@ function packageEarliest(
   if (project.startDate) {
     earliest = DateTime.max(
       earliest,
-      DateTime.fromJSDate(project.startDate, { zone: "utc" }).setZone(SCHEDULE_TIME_ZONE),
+      scheduleDateStart(project.startDate),
     );
   }
   if (workPackage.earliestStartDate) {
     earliest = DateTime.max(
       earliest,
-      DateTime.fromJSDate(workPackage.earliestStartDate, { zone: "utc" })
-        .setZone(SCHEDULE_TIME_ZONE),
+      scheduleDateStart(workPackage.earliestStartDate),
     );
   }
   for (const dependency of workPackage.incomingDependencies) {
@@ -295,8 +297,7 @@ function placementCandidates(
   const earliestDate = earliest.toUTC().toJSDate();
   const hardDeadlineDayMillis = project.deadlineType === "HARD"
     && project.targetEndDate
-    ? DateTime.fromJSDate(project.targetEndDate, { zone: "utc" })
-      .setZone(SCHEDULE_TIME_ZONE).startOf("day").toMillis()
+    ? scheduleDateStart(project.targetEndDate).toMillis()
     : null;
   for (const day of staticIndex.days) {
     if (day.localDayMillis < earliestDayMillis) continue;
@@ -489,6 +490,8 @@ function commonParetoVector(
     components.lowUnplannedMinutes,
     components.hardDeadlineExposureMinutes,
     components.softDeadlineExposureMinutes,
+    components.weeklyBudgetOverrunCents,
+    components.totalBudgetOverrunCents,
     components.overtimeMinutes,
     components.laborCostCents,
     ...(includeResilienceProxy ? [
@@ -916,7 +919,7 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
   return {
     ...best,
     optimizerDiagnostics: {
-      algorithmVersion: "portfolio-beam-v2",
+      algorithmVersion: "portfolio-beam-v3",
       strategy: "PLACEMENT_AWARE_BOUNDED_BEAM_SEARCH",
       planningProfile: input.planningProfile ?? "BALANCED",
       searchMode: input.searchMode ?? "FULL",
@@ -933,6 +936,7 @@ export function allocatePortfolioWork(input: PortfolioOptimizerInput) {
       dominancePrunedStates: stats.dominancePrunedStates,
       evaluatedPlans,
       searchLimitReached: orderSearch.searchLimitReached || stats.searchLimitReached,
+      dependencyCyclePackageIds: orderSearch.dependencyCyclePackageIds,
       runtimeMs: Date.now() - startedAt,
       objectiveVector: components,
       greedyBaseline: greedyMetrics,
@@ -1036,7 +1040,7 @@ export function allocatePortfolioScenarioPlans(
     results.set(profile, {
       ...best,
       optimizerDiagnostics: {
-        algorithmVersion: "portfolio-pareto-beam-v3",
+        algorithmVersion: "portfolio-pareto-beam-v4",
         strategy: "INDEXED_SHARED_MULTI_OBJECTIVE_PARETO_BEAM_SEARCH",
         planningProfile: profile,
         searchMode: "COMPARISON",
@@ -1053,6 +1057,7 @@ export function allocatePortfolioScenarioPlans(
         dominancePrunedStates: stats.dominancePrunedStates,
         evaluatedPlans: candidates.length,
         searchLimitReached: orderSearch.searchLimitReached || stats.searchLimitReached,
+        dependencyCyclePackageIds: orderSearch.dependencyCyclePackageIds,
         runtimeMs: sharedRuntimeMs,
         objectiveVector: bestScore.components,
         greedyBaseline: greedyMetrics,

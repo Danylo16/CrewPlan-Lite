@@ -56,6 +56,8 @@ function benchmarkInput(
     startDate: deadline,
     targetEndDate: scenario === "COST_VS_DEADLINE" ? deadline : null,
     deadlineType: scenario === "COST_VS_DEADLINE" ? "SOFT" : "NONE",
+    totalLaborBudgetCents: null,
+    weeklyLaborBudgetCents: null,
     workPackages: [{
       id: 10,
       name: "Release scope",

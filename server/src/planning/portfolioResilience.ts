@@ -1,6 +1,9 @@
 import { DateTime } from "luxon";
 import { allocationCostBreakdown } from "../scheduling/scoring.js";
-import { SCHEDULE_TIME_ZONE } from "../scheduling/timeAdapter.js";
+import {
+  SCHEDULE_TIME_ZONE,
+  scheduleDateEnd,
+} from "../scheduling/timeAdapter.js";
 import {
   overlaps,
   weekKey,
@@ -66,11 +69,7 @@ function minutes(interval: Interval) {
 function localTargetEnd(value: Date | null) {
   return value === null
     ? null
-    : DateTime.fromJSDate(value, { zone: "utc" })
-      .setZone(SCHEDULE_TIME_ZONE)
-      .endOf("day")
-      .toUTC()
-      .toJSDate();
+    : scheduleDateEnd(value).toUTC().toJSDate();
 }
 
 function cloneState(state: RepairState): RepairState {

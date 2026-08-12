@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   getWeekWindowUtc,
   parseWeekStart,
+  scheduleDateEnd,
+  scheduleDateStart,
   scheduleIntervalToUtc,
   splitExistingShiftIntoDays,
 } from "../src/scheduling/timeAdapter.js";
@@ -67,6 +69,24 @@ describe("schedule time adapter", () => {
     expect(window.endAt.toISOString()).toBe(
       "2026-03-29T22:00:00.000Z",
     );
+  });
+
+  it("treats stored database dates as Vienna calendar dates", () => {
+    expect(scheduleDateStart(
+      new Date("2026-08-10T00:00:00.000Z"),
+    ).toUTC().toISO()).toBe("2026-08-09T22:00:00.000Z");
+    expect(scheduleDateEnd(
+      new Date("2026-12-07T00:00:00.000Z"),
+    ).toUTC().toISO()).toBe("2026-12-07T22:59:59.999Z");
+  });
+
+  it("keeps a calendar date stable across the Vienna DST transition", () => {
+    const date = new Date("2026-03-29T00:00:00.000Z");
+
+    expect(scheduleDateStart(date).toISODate()).toBe("2026-03-29");
+    expect(scheduleDateEnd(date).toISODate()).toBe("2026-03-29");
+    expect(scheduleDateEnd(date).toUTC().toISO())
+      .toBe("2026-03-29T21:59:59.999Z");
   });
 
   it("splits an overnight shift into daily solver intervals", () => {

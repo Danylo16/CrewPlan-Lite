@@ -273,10 +273,18 @@ export function PlannerPage() {
           ? scenario.skillConcentrationBasisPoints
             - balancedScenario.skillConcentrationBasisPoints
           : 0;
+        const weeklyBudgetDelta = balancedScenario
+          ? scenario.weeklyBudgetOverrunCents
+            - balancedScenario.weeklyBudgetOverrunCents
+          : 0;
+        const totalBudgetDelta = balancedScenario
+          ? scenario.totalBudgetOverrunCents
+            - balancedScenario.totalBudgetOverrunCents
+          : 0;
         return <article className={`scenario-card ${planningProfile === scenario.planningProfile ? "scenario-selected" : ""}`} key={scenario.planningProfile}>
           <div><span>{scenario.planningProfile.replaceAll("_", " ")}</span><h4>{content.label}</h4><p>{content.description}</p></div>
-          <dl><div><dt>Planned / unplanned</dt><dd>{hours(scenario.proposedWorkMinutes)} / {hours(scenario.unplannedMinutes)}</dd></div><div><dt>Work Package cost</dt><dd>{money(scenario.workPackageCostCents)}</dd></div><div><dt>Deadline exposure</dt><dd>{hours(deadlineExposure)}</dd></div><div><dt>Single-point exposure</dt><dd>{hours(scenario.singlePointExposureMinutes)}</dd></div><div><dt>Skill concentration</dt><dd>{(scenario.skillConcentrationBasisPoints / 100).toFixed(0)}%</dd></div></dl>
-          <div className="scenario-deltas"><strong>{scenario.planningProfile === "BALANCED" ? "Comparison baseline" : "Difference from Balanced"}</strong>{scenario.planningProfile !== "BALANCED" && <><span>{signedCostDelta(costDelta)}</span><span>{deadlineDelta === 0 ? "same deadline exposure" : `${hours(Math.abs(deadlineDelta))} ${deadlineDelta < 0 ? "less" : "more"} deadline exposure`}</span><span>{signedPercentDelta(concentrationDelta)}</span></>}</div>
+          <dl><div><dt>Planned / unplanned</dt><dd>{hours(scenario.proposedWorkMinutes)} / {hours(scenario.unplannedMinutes)}</dd></div><div><dt>Work Package cost</dt><dd>{money(scenario.workPackageCostCents)}</dd></div><div><dt>Budget overrun</dt><dd>{money(scenario.weeklyBudgetOverrunCents)} weekly / {money(scenario.totalBudgetOverrunCents)} total</dd></div><div><dt>Deadline exposure</dt><dd>{hours(deadlineExposure)}</dd></div><div><dt>Single-point exposure</dt><dd>{hours(scenario.singlePointExposureMinutes)}</dd></div><div><dt>Skill concentration</dt><dd>{(scenario.skillConcentrationBasisPoints / 100).toFixed(0)}%</dd></div></dl>
+          <div className="scenario-deltas"><strong>{scenario.planningProfile === "BALANCED" ? "Comparison baseline" : "Difference from Balanced"}</strong>{scenario.planningProfile !== "BALANCED" && <><span>{signedCostDelta(costDelta)}</span><span>{weeklyBudgetDelta === 0 ? "same weekly budget overrun" : `${money(Math.abs(weeklyBudgetDelta))} ${weeklyBudgetDelta < 0 ? "less" : "more"} weekly overrun`}</span><span>{totalBudgetDelta === 0 ? "same total budget overrun" : `${money(Math.abs(totalBudgetDelta))} ${totalBudgetDelta < 0 ? "less" : "more"} total overrun`}</span><span>{deadlineDelta === 0 ? "same deadline exposure" : `${hours(Math.abs(deadlineDelta))} ${deadlineDelta < 0 ? "less" : "more"} deadline exposure`}</span><span>{signedPercentDelta(concentrationDelta)}</span></>}</div>
           <button className={planningProfile === scenario.planningProfile ? "primary-button" : "secondary-button"} disabled={isGenerating} type="button" onClick={() => void reviewScenario(scenario.planningProfile)}>{isGenerating && planningProfile === scenario.planningProfile ? "Building preview…" : "Review this plan"}</button>
         </article>;
       })}</div>
