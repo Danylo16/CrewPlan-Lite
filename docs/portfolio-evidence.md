@@ -104,3 +104,7 @@ The command fails unless:
 
 `recoverableAbsences` is recorded but deliberately is not a pass/fail gate. A
 fragile portfolio is a valid business finding, not an algorithm failure.
+
+## Historical measurements
+
+See the [controlled V2 historical summary](controlled-v2-historical-summary.md) for author-reported results and provenance. The summary is not a substitute for the original exporter output or a fresh reproduction.
